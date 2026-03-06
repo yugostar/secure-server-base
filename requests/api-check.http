@@ -1,0 +1,40 @@
+### 1. Получить CSRF токен
+GET http://localhost:8080/api/csrf
+
+### 2. Зарегистрировать пользователя USER
+POST http://localhost:8080/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "user1",
+  "password": "User123!"
+}
+
+### 3. Логин
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "user1",
+  "password": "User123!"
+}
+
+### 4. Проверить токен USER
+GET http://localhost:8080/api/auth/me
+Authorization: Bearer {{accessToken}}
+
+### 5. USER-зона
+GET http://localhost:8080/api/demo/user
+Authorization: Bearer {{accessToken}}
+
+### 6. ADMIN-only endpoint
+GET http://localhost:8080/api/admin/users
+Authorization: Bearer {{adminAccessToken}}
+
+### 7. Refresh токена
+POST http://localhost:8080/api/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{refreshToken}}"
+}

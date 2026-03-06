@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      TLS_KEYSTORE_B64: ${{ secrets.TLS_KEYSTORE_B64 }}
+      TLS_KEYSTORE_PASSWORD: ${{ secrets.TLS_KEYSTORE_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Make mvnw executable
+        run: chmod +x mvnw
+
+      - name: Restore TLS keystore from secrets (optional)
+        if: ${{ env.TLS_KEYSTORE_B64 }}
+        shell: bash
+        run: |
+          mkdir -p certs/out
+          echo "$TLS_KEYSTORE_B64" | base64 -d > certs/out/rs-secure-server-keystore.p12
+
+      - name: Build & test
+        run: ./mvnw -B test package
+
+      - name: Upload artifact (jar)
+        uses: actions/upload-artifact@v4
+        with:
+          name: secure-server-base
+          path: target/*.jar
