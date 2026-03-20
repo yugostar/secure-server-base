@@ -1,40 +1,80 @@
-### 1. Получить CSRF токен
-GET http://localhost:8080/api/csrf
+@baseUrl = https://localhost:8443
 
-### 2. Зарегистрировать пользователя USER
-POST http://localhost:8080/api/auth/register
+### 1. Регистрация обычного пользователя
+POST {{baseUrl}}/api/auth/register
 Content-Type: application/json
 
 {
   "username": "user1",
-  "password": "User123!"
+  "password": "User12345!"
 }
 
-### 3. Логин
-POST http://localhost:8080/api/auth/login
+### 2. Логин администратора
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+### 3. Логин обычного пользователя
+POST {{baseUrl}}/api/auth/login
 Content-Type: application/json
 
 {
   "username": "user1",
-  "password": "User123!"
+  "password": "User12345!"
 }
 
-### 4. Проверить токен USER
-GET http://localhost:8080/api/auth/me
-Authorization: Bearer {{accessToken}}
-
-### 5. USER-зона
-GET http://localhost:8080/api/demo/user
-Authorization: Bearer {{accessToken}}
-
-### 6. ADMIN-only endpoint
-GET http://localhost:8080/api/admin/users
+### 4. Проверка каталога продуктов (ADMIN)
+GET {{baseUrl}}/api/admin/catalog/products
 Authorization: Bearer {{adminAccessToken}}
 
-### 7. Refresh токена
-POST http://localhost:8080/api/auth/refresh
+### 5. Проверка каталога типов лицензий (ADMIN)
+GET {{baseUrl}}/api/admin/catalog/license-types
+Authorization: Bearer {{adminAccessToken}}
+
+### 6. Создание лицензии (ADMIN)
+POST {{baseUrl}}/api/licenses
+Authorization: Bearer {{adminAccessToken}}
 Content-Type: application/json
 
 {
-  "refreshToken": "{{refreshToken}}"
+  "productId": "{{productId}}",
+  "typeId": "{{typeId}}",
+  "ownerId": "{{ownerId}}",
+  "deviceCount": 2,
+  "blocked": false,
+  "description": "Лицензия для лабораторной №2"
+}
+
+### 7. Активация лицензии (USER)
+POST {{baseUrl}}/api/licenses/activate
+Authorization: Bearer {{userAccessToken}}
+Content-Type: application/json
+
+{
+  "activationKey": "{{licenseCode}}",
+  "deviceMac": "AA-BB-CC-DD-EE-01",
+  "deviceName": "Laptop"
+}
+
+### 8. Проверка лицензии (USER)
+POST {{baseUrl}}/api/licenses/check
+Authorization: Bearer {{userAccessToken}}
+Content-Type: application/json
+
+{
+  "deviceMac": "AA-BB-CC-DD-EE-01",
+  "productId": "{{productId}}"
+}
+
+### 9. Продление лицензии (USER)
+POST {{baseUrl}}/api/licenses/renew
+Authorization: Bearer {{userAccessToken}}
+Content-Type: application/json
+
+{
+  "activationKey": "{{licenseCode}}"
 }

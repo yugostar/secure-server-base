@@ -7,20 +7,11 @@ import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.stereotype.Component;
 
+import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
-import javax.crypto.SecretKey;
 
-/**
- * Генерация и валидация JWT токенов.
- *
- * В токен добавляются дополнительные claims:
- * - typ: access|refresh
- * - uid: id пользователя
- * - sid: id сессии (UUID)
- * - roles: роли (ТОЛЬКО в access)
- */
 @Component
 public class JwtTokenProvider {
 
@@ -34,11 +25,9 @@ public class JwtTokenProvider {
 
     public JwtTokenProvider(JwtProperties props) {
         this.props = props;
-
         if (props.getSecret() == null || props.getSecret().trim().length() < 32) {
             throw new IllegalStateException("app.jwt.secret должен быть задан и иметь длину >= 32 символа");
         }
-
         this.key = Keys.hmacShaKeyFor(props.getSecret().getBytes(StandardCharsets.UTF_8));
     }
 
@@ -48,9 +37,9 @@ public class JwtTokenProvider {
 
         Map<String, Object> claims = new HashMap<>();
         claims.put(CLAIM_TYPE, "access");
-        claims.put(CLAIM_UID, user.getId());
+        claims.put(CLAIM_UID, user.getId().toString());
         claims.put(CLAIM_SID, sessionId.toString());
-        claims.put(CLAIM_ROLES, user.getRoles().stream().map(Enum::name).toList());
+        claims.put(CLAIM_ROLES, List.of(user.getRole().name()));
 
         return Jwts.builder()
                 .issuer(props.getIssuer())
@@ -69,7 +58,7 @@ public class JwtTokenProvider {
 
         Map<String, Object> claims = new HashMap<>();
         claims.put(CLAIM_TYPE, "refresh");
-        claims.put(CLAIM_UID, user.getId());
+        claims.put(CLAIM_UID, user.getId().toString());
         claims.put(CLAIM_SID, sessionId.toString());
 
         return Jwts.builder()
@@ -94,7 +83,6 @@ public class JwtTokenProvider {
         if (actualType != expectedType) {
             throw new IllegalArgumentException("Неверный тип токена. Ожидался " + expectedType + ", получен " + actualType);
         }
-
         return jws;
     }
 
@@ -103,11 +91,10 @@ public class JwtTokenProvider {
         if (typ == null) {
             throw new IllegalArgumentException("В токене отсутствует claim 'typ'");
         }
-        String s = typ.toString();
-        return switch (s) {
+        return switch (typ.toString()) {
             case "access" -> TokenType.ACCESS;
             case "refresh" -> TokenType.REFRESH;
-            default -> throw new IllegalArgumentException("Неизвестный тип токена: " + s);
+            default -> throw new IllegalArgumentException("Неизвестный тип токена: " + typ);
         };
     }
 
@@ -119,14 +106,11 @@ public class JwtTokenProvider {
         return UUID.fromString(sid.toString());
     }
 
-    public Long getUserId(Claims claims) {
+    public UUID getUserId(Claims claims) {
         Object uid = claims.get(CLAIM_UID);
         if (uid == null) {
             throw new IllegalArgumentException("В токене отсутствует claim 'uid'");
         }
-        if (uid instanceof Number n) {
-            return n.longValue();
-        }
-        return Long.parseLong(uid.toString());
+        return UUID.fromString(uid.toString());
     }
 }

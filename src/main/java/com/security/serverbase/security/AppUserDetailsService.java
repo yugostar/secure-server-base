@@ -8,8 +8,6 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
 
-import java.util.stream.Collectors;
-
 @Service
 public class AppUserDetailsService implements UserDetailsService {
 
@@ -27,10 +25,11 @@ public class AppUserDetailsService implements UserDetailsService {
         return User.builder()
                 .username(user.getUsername())
                 .password(user.getPasswordHash())
-                .disabled(!user.isEnabled())
-                .authorities(user.getRoles().stream()
-                        .map(role -> new SimpleGrantedAuthority("ROLE_" + role.name()))
-                        .collect(Collectors.toSet()))
+                .disabled(user.isDisabled())
+                .accountExpired(user.isAccountExpired())
+                .accountLocked(user.isAccountLocked())
+                .credentialsExpired(user.isCredentialsExpired())
+                .authorities(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()))
                 .build();
     }
 }

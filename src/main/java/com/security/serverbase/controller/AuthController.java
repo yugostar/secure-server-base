@@ -1,12 +1,6 @@
 package com.security.serverbase.controller;
 
-import com.security.serverbase.controller.dto.ApiError;
-import com.security.serverbase.controller.dto.LoginRequest;
-import com.security.serverbase.controller.dto.MeResponse;
-import com.security.serverbase.controller.dto.RefreshRequest;
-import com.security.serverbase.controller.dto.RegisterRequest;
-import com.security.serverbase.controller.dto.RegisterResponse;
-import com.security.serverbase.controller.dto.TokenPairResponse;
+import com.security.serverbase.controller.dto.*;
 import com.security.serverbase.repository.AppUserRepository;
 import com.security.serverbase.security.AppUser;
 import com.security.serverbase.security.PasswordPolicy;
@@ -21,7 +15,6 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -41,11 +34,6 @@ public class AuthController {
         this.tokenPairService = tokenPairService;
     }
 
-    /**
-     * Процедура регистрации.
-     *
-     * По умолчанию выдаёт роль USER.
-     */
     @PostMapping("/register")
     public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest request) {
         String username = request.username().trim();
@@ -54,7 +42,6 @@ public class AuthController {
                     .body(new ApiError("Пользователь с таким логином уже существует"));
         }
 
-        // Проверка надёжности пароля
         try {
             PasswordPolicy.validateOrThrow(request.password());
         } catch (IllegalArgumentException ex) {
@@ -63,9 +50,13 @@ public class AuthController {
 
         AppUser user = new AppUser();
         user.setUsername(username);
+        user.setEmail(username + "@local.test");
         user.setPasswordHash(passwordEncoder.encode(request.password()));
-        user.setRoles(new HashSet<>(Set.of(Role.USER)));
-        user.setEnabled(true);
+        user.setRole(Role.USER);
+        user.setAccountExpired(false);
+        user.setAccountLocked(false);
+        user.setCredentialsExpired(false);
+        user.setDisabled(false);
 
         try {
             AppUser saved = appUserRepository.save(user);
@@ -73,18 +64,14 @@ public class AuthController {
                     .body(new RegisterResponse(
                             saved.getId(),
                             saved.getUsername(),
-                            saved.getRoles().stream().map(Enum::name).collect(Collectors.toSet())
+                            Set.of(saved.getRole().name())
                     ));
         } catch (DataIntegrityViolationException ex) {
-            // На случай race-condition с unique constraint
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body(new ApiError("Пользователь с таким логином уже существует"));
         }
     }
 
-    /**
-     * Логин по username/password и выдача пары токенов (access + refresh).
-     */
     @PostMapping("/login")
     public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
         try {
@@ -96,9 +83,6 @@ public class AuthController {
         }
     }
 
-    /**
-     * Обновление пары токенов по refresh токену.
-     */
     @PostMapping("/refresh")
     public ResponseEntity<?> refresh(@Valid @RequestBody RefreshRequest request) {
         try {
@@ -110,9 +94,6 @@ public class AuthController {
         }
     }
 
-    /**
-     * Проверка текущего пользователя.
-     */
     @GetMapping("/me")
     public MeResponse me(Authentication authentication) {
         Set<String> roles = authentication.getAuthorities().stream()

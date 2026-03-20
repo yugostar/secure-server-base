@@ -7,16 +7,6 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
-import java.util.HashSet;
-import java.util.Set;
-
-/**
- * Создаёт администратора при запуске, если заданы переменные окружения:
- * - APP_ADMIN_USERNAME
- * - APP_ADMIN_PASSWORD
- *
- * Это позволяет тестировать роль ADMIN, при этом не добавляя пользователей "в явном виде" в код/скрипты.
- */
 @Component
 public class BootstrapAdminRunner implements ApplicationRunner {
 
@@ -39,19 +29,21 @@ public class BootstrapAdminRunner implements ApplicationRunner {
         if (adminUsername == null || adminUsername.isBlank() || adminPassword == null || adminPassword.isBlank()) {
             return;
         }
-
-        if (appUserRepository.existsByUsername(adminUsername)) {
+        if (appUserRepository.existsByUsername(adminUsername.trim())) {
             return;
         }
 
-        // Проверим политику пароля, чтобы админ тоже соответствовал требованиям.
         PasswordPolicy.validateOrThrow(adminPassword);
 
         AppUser admin = new AppUser();
         admin.setUsername(adminUsername.trim());
+        admin.setEmail(adminUsername.trim() + "@local.test");
         admin.setPasswordHash(passwordEncoder.encode(adminPassword));
-        admin.setRoles(new HashSet<>(Set.of(Role.ADMIN)));
-        admin.setEnabled(true);
+        admin.setRole(Role.ADMIN);
+        admin.setAccountExpired(false);
+        admin.setAccountLocked(false);
+        admin.setCredentialsExpired(false);
+        admin.setDisabled(false);
         appUserRepository.save(admin);
     }
 }

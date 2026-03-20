@@ -2,49 +2,46 @@ package com.security.serverbase.security;
 
 import jakarta.persistence.*;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.UUID;
 
 @Entity
-@Table(name = "app_users")
+@Table(name = "users")
 public class AppUser {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
 
-    @Column(nullable = false, unique = true, length = 100)
+    @Column(name = "name", nullable = false, unique = true, length = 100)
     private String username;
 
-    /**
-     * В БД хранится ТОЛЬКО хэш пароля (BCrypt).
-     */
     @Column(name = "password_hash", nullable = false, length = 100)
     private String passwordHash;
 
-    @Column(nullable = false)
-    private boolean enabled = true;
+    @Column(nullable = false, unique = true, length = 150)
+    private String email;
 
-    @ElementCollection(fetch = FetchType.EAGER)
-    @CollectionTable(name = "app_user_roles", joinColumns = @JoinColumn(name = "user_id"))
     @Enumerated(EnumType.STRING)
-    @Column(name = "role", nullable = false)
-    private Set<Role> roles = new HashSet<>();
+    @Column(nullable = false, length = 20)
+    private Role role = Role.USER;
 
-    public AppUser() {
-    }
+    @Column(name = "is_account_expired", nullable = false)
+    private boolean accountExpired;
 
-    public AppUser(String username, String passwordHash, Set<Role> roles) {
-        this.username = username;
-        this.passwordHash = passwordHash;
-        this.roles = roles;
-    }
+    @Column(name = "is_account_locked", nullable = false)
+    private boolean accountLocked;
 
-    public Long getId() {
+    @Column(name = "is_credentials_expired", nullable = false)
+    private boolean credentialsExpired;
+
+    @Column(name = "is_disabled", nullable = false)
+    private boolean disabled;
+
+    public UUID getId() {
         return id;
     }
 
-    public void setId(Long id) {
+    public void setId(UUID id) {
         this.id = id;
     }
 
@@ -64,19 +61,55 @@ public class AppUser {
         this.passwordHash = passwordHash;
     }
 
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public Role getRole() {
+        return role;
+    }
+
+    public void setRole(Role role) {
+        this.role = role;
+    }
+
+    public boolean isAccountExpired() {
+        return accountExpired;
+    }
+
+    public void setAccountExpired(boolean accountExpired) {
+        this.accountExpired = accountExpired;
+    }
+
+    public boolean isAccountLocked() {
+        return accountLocked;
+    }
+
+    public void setAccountLocked(boolean accountLocked) {
+        this.accountLocked = accountLocked;
+    }
+
+    public boolean isCredentialsExpired() {
+        return credentialsExpired;
+    }
+
+    public void setCredentialsExpired(boolean credentialsExpired) {
+        this.credentialsExpired = credentialsExpired;
+    }
+
+    public boolean isDisabled() {
+        return disabled;
+    }
+
+    public void setDisabled(boolean disabled) {
+        this.disabled = disabled;
+    }
+
     public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public Set<Role> getRoles() {
-        return roles;
-    }
-
-    public void setRoles(Set<Role> roles) {
-        this.roles = roles;
+        return !disabled;
     }
 }

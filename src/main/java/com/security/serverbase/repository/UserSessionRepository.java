@@ -7,6 +7,5 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface UserSessionRepository extends JpaRepository<UserSession, UUID> {
-
-    Optional<UserSession> findByIdAndUserId(UUID id, Long userId);
+    Optional<UserSession> findByIdAndUserId(UUID id, UUID userId);
 }

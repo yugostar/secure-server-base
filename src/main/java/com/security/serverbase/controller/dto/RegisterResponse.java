@@ -1,9 +1,10 @@
 package com.security.serverbase.controller.dto;
 
 import java.util.Set;
+import java.util.UUID;
 
 public record RegisterResponse(
-        Long id,
+        UUID id,
         String username,
         Set<String> roles
 ) {

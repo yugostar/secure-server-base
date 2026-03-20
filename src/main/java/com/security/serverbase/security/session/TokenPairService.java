@@ -39,9 +39,6 @@ public class TokenPairService {
         this.props = props;
     }
 
-    /**
-     * Логин по username/password и выдача пары (access+refresh).
-     */
     @Transactional
     public TokenPairResponse login(String username, String password) {
         Authentication auth = authenticationManager.authenticate(
@@ -67,47 +64,35 @@ public class TokenPairService {
                 props.getAccessTtlSeconds(), props.getRefreshTtlSeconds());
     }
 
-    /**
-     * Обновление пары токенов. При успешном refresh:
-     * - текущая сессия -> REVOKED
-     * - создаётся новая ACTIVE с новым refresh jti
-     *
-     * Повторное использование старого refresh после ротации приводит к COMPROMISED и ошибке.
-     */
     @Transactional
     public TokenPairResponse refresh(String refreshToken) {
         Jws<Claims> jws = tokenProvider.parseAndValidate(refreshToken, TokenType.REFRESH);
         Claims claims = jws.getPayload();
 
         UUID sessionId = tokenProvider.getSessionId(claims);
-        Long userId = tokenProvider.getUserId(claims);
+        UUID userId = tokenProvider.getUserId(claims);
         String refreshJti = claims.getId();
 
         UserSession session = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found"));
 
-        // Базовые проверки принадлежности
         if (session.getUser() == null || session.getUser().getId() == null || !session.getUser().getId().equals(userId)) {
             throw new IllegalArgumentException("Invalid refresh token");
         }
 
-        // Если refresh истёк по времени в БД — помечаем EXPIRED и запрещаем
         if (session.getRefreshExpiresAt() != null && session.getRefreshExpiresAt().isBefore(Instant.now())) {
             session.setStatus(SessionStatus.EXPIRED);
             sessionRepository.save(session);
             throw new IllegalArgumentException("Refresh token expired");
         }
 
-        // Основная логика статусов
         if (session.getStatus() == SessionStatus.ACTIVE) {
-            // Refresh должен совпадать с актуальным для сессии
             if (!refreshJti.equals(session.getRefreshJti())) {
                 session.setStatus(SessionStatus.COMPROMISED);
                 sessionRepository.save(session);
                 throw new IllegalArgumentException("Refresh token reuse detected");
             }
 
-            // Ротация
             session.setStatus(SessionStatus.REVOKED);
             session.setRevokedAt(Instant.now());
 
@@ -133,8 +118,6 @@ public class TokenPairService {
                     props.getAccessTtlSeconds(), props.getRefreshTtlSeconds());
         }
 
-        // REVOKED/EXPIRED/COMPROMISED: refresh запрещён.
-        // Если это повторное использование старого refresh после ротации — помечаем COMPROMISED.
         if (session.getStatus() == SessionStatus.REVOKED && refreshJti.equals(session.getRefreshJti())) {
             session.setStatus(SessionStatus.COMPROMISED);
             sessionRepository.save(session);

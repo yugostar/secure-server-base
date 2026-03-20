@@ -31,7 +31,7 @@ public class SecurityDemoController {
                         user.getId(),
                         user.getUsername(),
                         user.isEnabled(),
-                        user.getRoles().stream().map(Enum::name).sorted().toList()
+                        List.of(user.getRole().name())
                 ))
                 .toList();
     }
