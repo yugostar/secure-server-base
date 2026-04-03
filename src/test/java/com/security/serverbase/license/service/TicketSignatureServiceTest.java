@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest
 @TestPropertySource(properties = {
-        "signature.key-store-path=file:secure-server-keystore.p12",
+        "signature.key-store-path=classpath:secure-server-keystore.p12",
         "signature.key-store-type=PKCS12",
         "signature.key-store-password=changeit",
         "signature.key-alias=secure-server",
