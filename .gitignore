@@ -31,10 +31,11 @@ build/
 
 ### VS Code ###
 .vscode/
-# Lab 6 (TLS) - do NOT commit private keys / keystores
+
 certs/out/
 *.p12
 *.jks
 *.key
 *.csr
 *.srl
+!src/test/resources/secure-server-keystore.p12
