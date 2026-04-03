@@ -11,6 +11,10 @@ jobs:
     env:
       TLS_KEYSTORE_B64: ${{ secrets.TLS_KEYSTORE_B64 }}
       TLS_KEYSTORE_PASSWORD: ${{ secrets.TLS_KEYSTORE_PASSWORD }}
+      SIGNATURE_KEYSTORE_B64: ${{ secrets.SIGNATURE_KEYSTORE_B64 }}
+      SIGNATURE_KEYSTORE_PASSWORD: ${{ secrets.SIGNATURE_KEYSTORE_PASSWORD }}
+      SIGNATURE_KEY_ALIAS: ${{ vars.SIGNATURE_KEY_ALIAS }}
+      SIGNATURE_PUBLIC_CERT_B64: ${{ vars.SIGNATURE_PUBLIC_CERT_B64 }}
 
     steps:
       - name: Checkout
@@ -33,7 +37,20 @@ jobs:
           mkdir -p certs/out
           echo "$TLS_KEYSTORE_B64" | base64 -d > certs/out/rs-secure-server-keystore.p12
 
+      - name: Restore signature keystore from secrets (optional)
+        if: ${{ env.SIGNATURE_KEYSTORE_B64 }}
+        shell: bash
+        run: |
+          echo "$SIGNATURE_KEYSTORE_B64" | base64 -d > secure-server-keystore.p12
+
       - name: Test
+        env:
+          SIGNATURE_KEYSTORE_PATH: file:secure-server-keystore.p12
+          SIGNATURE_KEYSTORE_TYPE: PKCS12
+          SIGNATURE_KEYSTORE_PASSWORD: ${{ env.SIGNATURE_KEYSTORE_PASSWORD }}
+          SIGNATURE_KEY_ALIAS: ${{ env.SIGNATURE_KEY_ALIAS }}
+          SIGNATURE_KEY_PASSWORD: ${{ env.SIGNATURE_KEYSTORE_PASSWORD }}
+          SIGNATURE_ALGORITHM: SHA256withRSA
         run: ./mvnw -B test
 
       - name: Build

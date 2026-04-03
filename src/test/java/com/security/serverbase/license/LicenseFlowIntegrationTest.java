@@ -27,7 +27,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "APP_ADMIN_USERNAME=admin",
         "APP_ADMIN_PASSWORD=Admin123!",
         "APP_JWT_SECRET=1234567890qwertyuiopasdfghjklzxcvbnm"
-})
+}, locations = "classpath:application-signature-test.properties")
 class LicenseFlowIntegrationTest {
 
     @Autowired

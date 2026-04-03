@@ -1,3 +1,4 @@
+//аутентифицирует пользователя по access token
 package com.security.serverbase.security.jwt;
 
 import io.jsonwebtoken.Claims;
@@ -75,8 +76,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             roles = List.of(rolesObj.toString());
         }
 
-        // List<SimpleGrantedAuthority> не является подтипом Collection<GrantedAuthority>
-        // из‑за инвариантности дженериков. Приводим тип элемента к GrantedAuthority.
         return roles.stream()
                 .map(r -> (GrantedAuthority) new SimpleGrantedAuthority("ROLE_" + r))
                 .toList();
