@@ -7,6 +7,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api/licenses")
@@ -24,6 +25,13 @@ public class LicenseController {
     @ResponseStatus(HttpStatus.CREATED)
     public CreateLicenseResponse createLicense(@Valid @RequestBody CreateLicenseRequest request,
                                                Authentication authentication) {
+        boolean isAdmin = authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
+
+        if (!isAdmin) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Только администратор может создавать лицензии");
+        }
+
         var admin = applicationUserService.getByUsernameOrFail(authentication.getName());
         return licenseService.createLicense(request, admin.getId());
     }
