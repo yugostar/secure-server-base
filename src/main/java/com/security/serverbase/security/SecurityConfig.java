@@ -46,6 +46,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/signatures/*/history").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/signatures/*/audit").hasRole("ADMIN")
 
+                        // Задание 5: бинарный API сигнатур
+                        .requestMatchers(HttpMethod.GET, "/api/binary/signatures/full").hasAnyRole("ADMIN", "USER")
+                        .requestMatchers(HttpMethod.GET, "/api/binary/signatures/increment").hasAnyRole("ADMIN", "USER")
+                        .requestMatchers(HttpMethod.POST, "/api/binary/signatures/by-ids").hasAnyRole("ADMIN", "USER")
+
                         .requestMatchers("/api/auth/me", "/auth/me", "/api/demo/user").authenticated()
                         .anyRequest().authenticated()
                 )
