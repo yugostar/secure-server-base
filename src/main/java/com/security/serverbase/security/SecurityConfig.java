@@ -5,6 +5,7 @@ import com.security.serverbase.security.jwt.JwtProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -30,7 +31,20 @@ public class SecurityConfig {
 
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/licenses/**").authenticated()
-                        .requestMatchers("/api/signatures/**").authenticated()
+
+                        // Задание 4: модуль антивирусных сигнатур
+                        .requestMatchers(HttpMethod.GET, "/api/signatures").hasAnyRole("ADMIN", "USER")
+                        .requestMatchers(HttpMethod.GET, "/api/signatures/").hasAnyRole("ADMIN", "USER")
+                        .requestMatchers(HttpMethod.GET, "/api/signatures/increment").hasAnyRole("ADMIN", "USER")
+                        .requestMatchers(HttpMethod.POST, "/api/signatures/by-ids").hasAnyRole("ADMIN", "USER")
+
+                        .requestMatchers(HttpMethod.POST, "/api/signatures").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/signatures/").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/signatures/*").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.DELETE, "/api/signatures/*").hasRole("ADMIN")
+
+                        .requestMatchers(HttpMethod.GET, "/api/signatures/*/history").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/signatures/*/audit").hasRole("ADMIN")
 
                         .requestMatchers("/api/auth/me", "/auth/me", "/api/demo/user").authenticated()
                         .anyRequest().authenticated()
