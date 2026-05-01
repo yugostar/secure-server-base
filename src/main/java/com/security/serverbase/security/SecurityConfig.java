@@ -30,6 +30,7 @@ public class SecurityConfig {
 
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/licenses/**").authenticated()
+                        .requestMatchers("/api/signatures/**").authenticated()
 
                         .requestMatchers("/api/auth/me", "/auth/me", "/api/demo/user").authenticated()
                         .anyRequest().authenticated()

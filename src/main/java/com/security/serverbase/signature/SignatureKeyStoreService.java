@@ -54,7 +54,7 @@ public class SignatureKeyStoreService {
             KeyStore keyStore = KeyStore.getInstance(properties.getKeyStoreType());
             Resource resource = resourceLoader.getResource(resolvePath(properties.getKeyStorePath()));
             if (!resource.exists()) {
-                throw new IllegalStateException("Signature keystore not found: " + properties.getKeyStorePath());
+                throw new IllegalStateException("Хранилище ключей для подписи не найдено: " + properties.getKeyStorePath());
             }
 
             try (InputStream inputStream = resource.getInputStream()) {
@@ -64,24 +64,24 @@ public class SignatureKeyStoreService {
             char[] keyPassword = resolveKeyPassword();
             Key key = keyStore.getKey(properties.getKeyAlias(), keyPassword);
             if (!(key instanceof PrivateKey loadedPrivateKey)) {
-                throw new IllegalStateException("Alias '" + properties.getKeyAlias() + "' does not contain a private key");
+                throw new IllegalStateException("Alias '" + properties.getKeyAlias() + "' не содержит секретного ключа");
             }
 
             Certificate certificate = keyStore.getCertificate(properties.getKeyAlias());
             if (certificate == null) {
-                throw new IllegalStateException("Certificate not found for alias '" + properties.getKeyAlias() + "'");
+                throw new IllegalStateException("Сертификат не найден для alias '" + properties.getKeyAlias() + "'");
             }
 
             this.privateKey = loadedPrivateKey;
             this.publicKey = certificate.getPublicKey();
         } catch (Exception ex) {
-            throw new IllegalStateException("Failed to load signature keys", ex);
+            throw new IllegalStateException("Не удалось загрузить ключи подписи", ex);
         }
     }
 
     private void validateProperties() {
         if (isBlank(properties.getKeyStorePath()) || isBlank(properties.getKeyStorePassword()) || isBlank(properties.getKeyAlias())) {
-            throw new IllegalStateException("Signature keystore configuration is incomplete. Required: signature.key-store-path, signature.key-store-password, signature.key-alias");
+            throw new IllegalStateException("Настройка хранилища ключей подписи не завершена. Требуется: signature.key-store-path, signature.key-store-password, signature.key-alias");
         }
     }
 
