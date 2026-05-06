@@ -1,6 +1,10 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <lmcons.h>
+#include <tlhelp32.h>
+#include <rpc.h>
+
+#include "SakuraShieldRpc.h"
 
 #include <algorithm>
 #include <cwchar>
@@ -13,6 +17,10 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"SakuraShieldWindowClass";
 constexpr wchar_t kWindowTitle[] = L"Sakura Shield";
 constexpr wchar_t kTrayTooltip[] = L"Sakura Shield";
+constexpr wchar_t kServiceName[] = L"SakuraShieldService";
+constexpr wchar_t kServiceProcessName[] = L"SakuraShieldService.exe";
+constexpr wchar_t kRpcProtocol[] = L"ncalrpc";
+constexpr wchar_t kRpcEndpoint[] = L"SakuraShieldRpcEndpoint";
 constexpr UINT kTrayIconId = 1;
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT_PTR kCommandTrayOpen = 1001;
@@ -52,6 +60,180 @@ bool ShouldStartHidden(LPWSTR commandLine) {
         || ContainsFlag(args, L"/background")
         || ContainsFlag(args, L"--tray")
         || ContainsFlag(args, L"/tray");
+}
+
+std::wstring GetFileNameFromPath(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return path;
+    }
+    return path.substr(slash + 1);
+}
+
+bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right) {
+    return ToLower(left) == ToLower(right);
+}
+
+DWORD GetParentProcessId() {
+    const DWORD currentProcessId = GetCurrentProcessId();
+    DWORD parentProcessId = 0;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == currentProcessId) {
+                parentProcessId = entry.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return parentProcessId;
+}
+
+std::wstring GetProcessImagePath(DWORD processId) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (process == nullptr) {
+        return L"";
+    }
+
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD size = static_cast<DWORD>(path.size());
+
+    if (QueryFullProcessImageNameW(process, 0, path.data(), &size) == FALSE) {
+        CloseHandle(process);
+        return L"";
+    }
+
+    path.resize(size);
+    CloseHandle(process);
+    return path;
+}
+
+bool IsParentServiceProcess() {
+    const DWORD parentProcessId = GetParentProcessId();
+    if (parentProcessId == 0) {
+        return false;
+    }
+
+    const std::wstring parentPath = GetProcessImagePath(parentProcessId);
+    if (parentPath.empty()) {
+        return false;
+    }
+
+    return EqualsIgnoreCase(GetFileNameFromPath(parentPath), kServiceProcessName);
+}
+
+DWORD QueryServiceState(SC_HANDLE service) {
+    SERVICE_STATUS_PROCESS status{};
+    DWORD bytesNeeded = 0;
+
+    if (QueryServiceStatusEx(
+        service,
+        SC_STATUS_PROCESS_INFO,
+        reinterpret_cast<LPBYTE>(&status),
+        sizeof(status),
+        &bytesNeeded) == FALSE) {
+        return 0;
+    }
+
+    return status.dwCurrentState;
+}
+
+bool WaitForServiceRunning(SC_HANDLE service, DWORD timeoutMs) {
+    const DWORD started = GetTickCount();
+
+    while (GetTickCount() - started < timeoutMs) {
+        const DWORD state = QueryServiceState(service);
+        if (state == SERVICE_RUNNING) {
+            return true;
+        }
+
+        if (state == SERVICE_STOPPED) {
+            return false;
+        }
+
+        Sleep(300);
+    }
+
+    return QueryServiceState(service) == SERVICE_RUNNING;
+}
+
+bool ShouldExitAfterServiceBootstrap() {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (manager == nullptr) {
+        return true;
+    }
+
+    SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS | SERVICE_START);
+    if (service == nullptr) {
+        CloseServiceHandle(manager);
+        return true;
+    }
+
+    const DWORD state = QueryServiceState(service);
+    bool shouldExit = true;
+
+    if (state == SERVICE_RUNNING) {
+        shouldExit = false;
+    } else if (state == SERVICE_STOPPED) {
+        StartServiceW(service, 0, nullptr);
+        WaitForServiceRunning(service, 30000);
+    } else if (state == SERVICE_START_PENDING) {
+        WaitForServiceRunning(service, 30000);
+    }
+
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    return shouldExit;
+}
+
+bool RequestServiceStop() {
+    RPC_WSTR stringBinding = nullptr;
+    handle_t binding = nullptr;
+
+    RPC_STATUS status = RpcStringBindingComposeW(
+        nullptr,
+        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(kRpcProtocol)),
+        nullptr,
+        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(kRpcEndpoint)),
+        nullptr,
+        &stringBinding
+    );
+
+    if (status != RPC_S_OK) {
+        return false;
+    }
+
+    status = RpcBindingFromStringBindingW(stringBinding, &binding);
+    RpcStringFreeW(&stringBinding);
+
+    if (status != RPC_S_OK) {
+        return false;
+    }
+
+    status = RPC_S_OK;
+
+    RpcTryExcept
+    {
+        SakuraShieldStopService(binding);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+
+    RpcBindingFree(&binding);
+    return status == RPC_S_OK;
 }
 
 std::wstring BuildMutexName() {
@@ -275,8 +457,10 @@ void ShowTrayContextMenu(HWND window) {
 
 void ExitApplication(HWND window) {
     g_isExiting = true;
-    RemoveTrayIcon();
-    DestroyWindow(window);
+    if (!RequestServiceStop()) {
+        RemoveTrayIcon();
+        DestroyWindow(window);
+    }
 }
 
 void DrawRoundedPanel(HDC deviceContext, const RECT& rect) {
@@ -307,7 +491,7 @@ void PaintMainWindow(HWND window) {
     SelectObject(deviceContext, g_smallFont);
     SetTextColor(deviceContext, RGB(154, 77, 126));
     RECT subtitleRect{ 0, 73, clientRect.right, 103 };
-    DrawTextW(deviceContext, L"pastel tray guard / さくらモード", -1, &subtitleRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(deviceContext, L"pastel service guard / さくらモード", -1, &subtitleRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     const int panelWidth = 560;
     const int panelHeight = 255;
@@ -321,8 +505,8 @@ void PaintMainWindow(HWND window) {
 
     const wchar_t statusText[] =
         L"状態 / STATUS\r\n\r\n"
-        L"[ OK ] tray link ........ active ♡\r\n"
-        L"[ OK ] guard mode ....... online\r\n"
+        L"[ OK ] service link ..... active ♡\r\n"
+        L"[ OK ] rpc channel ...... online\r\n"
         L"[ OK ] background ....... running\r\n"
         L"[ .. ] scan mood ........ (｡•̀ᴗ-)✧";
 
@@ -331,7 +515,7 @@ void PaintMainWindow(HWND window) {
     SelectObject(deviceContext, g_smallFont);
     SetTextColor(deviceContext, RGB(143, 73, 119));
     RECT hintRect{ panelRect.left + 38, panelRect.bottom - 48, panelRect.right - 38, panelRect.bottom - 14 };
-    DrawTextW(deviceContext, L"Закрытие окна прячет приложение в трей. Выход: Файл -> Выход.", -1, &hintRect, DT_CENTER | DT_WORDBREAK);
+    DrawTextW(deviceContext, L"Закрытие окна прячет приложение в трей. Выход останавливает службу.", -1, &hintRect, DT_CENTER | DT_WORDBREAK);
 
     EndPaint(window, &paintStruct);
 }
@@ -452,6 +636,14 @@ HWND CreateMainWindow() {
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     g_instance = instance;
+
+    if (ShouldExitAfterServiceBootstrap()) {
+        return 0;
+    }
+
+    if (!IsParentServiceProcess()) {
+        return 0;
+    }
 
     if (!CreateSingleInstanceGuard()) {
         return 0;
