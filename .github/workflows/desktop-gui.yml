@@ -1,0 +1,32 @@
+name: Desktop GUI CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-desktop-gui:
+    name: Build Win32 GUI
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S desktop -B build/desktop -G "Visual Studio 17 2022" -A x64
+
+      - name: Build Release exe
+        run: cmake --build build/desktop --config Release --parallel
+
+      - name: Prepare artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item build\desktop\Release\SakuraShield.exe artifacts\SakuraShield.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SakuraShield-windows-x64
+          path: artifacts/SakuraShield.exe
