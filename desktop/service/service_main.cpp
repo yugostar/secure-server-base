@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <fstream>
+#include <sstream>
 #include <cwctype>
 #include <map>
 #include <mutex>
@@ -26,6 +28,30 @@ SERVICE_STATUS g_serviceStatus{};
 std::mutex g_processMutex;
 std::map<DWORD, PROCESS_INFORMATION> g_guiProcesses;
 std::atomic_bool g_rpcStopRequested = false;
+
+
+std::wstring GetLogPath() {
+    CreateDirectoryW(L"C:\\ProgramData\\SakuraShield", nullptr);
+    return L"C:\\ProgramData\\SakuraShield\\service.log";
+}
+
+void LogLine(const std::wstring& message) {
+    std::wofstream log(GetLogPath(), std::ios::app);
+    if (log.is_open()) {
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        log << L"[" << time.wYear << L"-" << time.wMonth << L"-" << time.wDay
+            << L" " << time.wHour << L":" << time.wMinute << L":" << time.wSecond
+            << L"] " << message << std::endl;
+    }
+}
+
+void LogWin32Error(const std::wstring& stage, DWORD error) {
+    std::wstringstream stream;
+    stream << stage << L" failed, error=" << error;
+    LogLine(stream.str());
+}
+
 
 std::wstring ToLower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
@@ -123,6 +149,14 @@ bool HasGuiProcessForSession(DWORD sessionId) {
     return g_guiProcesses.find(sessionId) != g_guiProcesses.end();
 }
 
+
+size_t GetGuiProcessCount() {
+    std::lock_guard<std::mutex> lock(g_processMutex);
+    RemoveExitedGuiProcessesLocked();
+    return g_guiProcesses.size();
+}
+
+
 void StoreGuiProcess(DWORD sessionId, PROCESS_INFORMATION processInformation) {
     std::lock_guard<std::mutex> lock(g_processMutex);
     RemoveExitedGuiProcessesLocked();
@@ -171,26 +205,48 @@ void LaunchGuiForSession(DWORD sessionId) {
         return;
     }
 
+    {
+        std::wstringstream stream;
+        stream << L"launch request for session " << sessionId;
+        LogLine(stream.str());
+    }
+
     HANDLE userToken = nullptr;
     if (WTSQueryUserToken(sessionId, &userToken) == FALSE) {
+        LogWin32Error(L"WTSQueryUserToken", GetLastError());
         return;
     }
 
-    HANDLE primaryToken = nullptr;
-    if (!DuplicateSessionUserToken(userToken, primaryToken)) {
-        CloseHandle(userToken);
-        return;
+    HANDLE duplicatedToken = nullptr;
+    HANDLE launchToken = userToken;
+
+    if (DuplicateTokenEx(
+        userToken,
+        MAXIMUM_ALLOWED,
+        nullptr,
+        SecurityImpersonation,
+        TokenPrimary,
+        &duplicatedToken) == TRUE) {
+        launchToken = duplicatedToken;
+    } else {
+        LogWin32Error(L"DuplicateTokenEx", GetLastError());
     }
 
     LPVOID environment = nullptr;
-    const BOOL environmentCreated = CreateEnvironmentBlock(&environment, primaryToken, FALSE);
+    const BOOL environmentCreated = CreateEnvironmentBlock(&environment, launchToken, FALSE);
+    if (environmentCreated == FALSE) {
+        LogWin32Error(L"CreateEnvironmentBlock", GetLastError());
+    }
 
     const std::wstring guiPath = GetGuiExecutablePath();
     if (guiPath.empty()) {
+        LogLine(L"GUI path is empty");
         if (environmentCreated) {
             DestroyEnvironmentBlock(environment);
         }
-        CloseHandle(primaryToken);
+        if (duplicatedToken != nullptr) {
+            CloseHandle(duplicatedToken);
+        }
         CloseHandle(userToken);
         return;
     }
@@ -201,50 +257,76 @@ void LaunchGuiForSession(DWORD sessionId) {
     STARTUPINFOW startupInfo{};
     startupInfo.cb = sizeof(startupInfo);
     startupInfo.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
+    startupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    startupInfo.wShowWindow = SW_HIDE;
 
     PROCESS_INFORMATION processInformation{};
 
     const BOOL created = CreateProcessAsUserW(
-        primaryToken,
-        guiPath.c_str(),
+        launchToken,
+        nullptr,
         commandLine.data(),
         nullptr,
         nullptr,
         FALSE,
-        CREATE_UNICODE_ENVIRONMENT,
+        CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
         environmentCreated ? environment : nullptr,
         workingDirectory.c_str(),
         &startupInfo,
         &processInformation
     );
 
+    if (created == FALSE) {
+        LogWin32Error(L"CreateProcessAsUserW", GetLastError());
+    } else {
+        std::wstringstream stream;
+        stream << L"GUI started, pid=" << processInformation.dwProcessId << L", session=" << sessionId;
+        LogLine(stream.str());
+        StoreGuiProcess(sessionId, processInformation);
+    }
+
     if (environmentCreated) {
         DestroyEnvironmentBlock(environment);
     }
 
-    CloseHandle(primaryToken);
-    CloseHandle(userToken);
-
-    if (created) {
-        StoreGuiProcess(sessionId, processInformation);
+    if (duplicatedToken != nullptr) {
+        CloseHandle(duplicatedToken);
     }
+
+    CloseHandle(userToken);
 }
 
 void LaunchGuiForExistingSessions() {
     PWTS_SESSION_INFOW sessions = nullptr;
     DWORD count = 0;
 
+    LogLine(L"enumerating terminal sessions");
+
     if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count) == FALSE) {
-        return;
+        LogWin32Error(L"WTSEnumerateSessionsW", GetLastError());
+    } else {
+        for (DWORD index = 0; index < count; ++index) {
+            std::wstringstream stream;
+            stream << L"session " << sessions[index].SessionId << L", state=" << sessions[index].State;
+            LogLine(stream.str());
+
+            if (sessions[index].SessionId != 0) {
+                LaunchGuiForSession(sessions[index].SessionId);
+            }
+        }
+
+        WTSFreeMemory(sessions);
     }
 
-    for (DWORD index = 0; index < count; ++index) {
-        if (sessions[index].SessionId != 0) {
-            LaunchGuiForSession(sessions[index].SessionId);
+    if (GetGuiProcessCount() == 0) {
+        const DWORD activeSessionId = WTSGetActiveConsoleSessionId();
+        if (activeSessionId != 0 && activeSessionId != 0xFFFFFFFF) {
+            std::wstringstream stream;
+            stream << L"fallback active console session " << activeSessionId;
+            LogLine(stream.str());
+            LaunchGuiForSession(activeSessionId);
         }
     }
-
-    WTSFreeMemory(sessions);
 }
 
 void SetServiceState(DWORD state, DWORD win32ExitCode = NO_ERROR, DWORD waitHint = 0) {
@@ -315,6 +397,7 @@ DWORD WINAPI ServiceControlHandler(DWORD control, DWORD eventType, LPVOID eventD
 }
 
 void WINAPI ServiceMain(DWORD, LPWSTR*) {
+    LogLine(L"service main entered");
     g_statusHandle = RegisterServiceCtrlHandlerExW(kServiceName, ServiceControlHandler, nullptr);
     if (g_statusHandle == nullptr) {
         return;
@@ -328,10 +411,13 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
     }
 
     SetServiceState(SERVICE_RUNNING);
+    LogLine(L"service state running");
     LaunchGuiForExistingSessions();
 
+    LogLine(L"RPC server listening");
     RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, FALSE);
 
+    LogLine(L"service stopping");
     SetServiceState(SERVICE_STOP_PENDING, NO_ERROR, 3000);
     g_rpcStopRequested = true;
     TerminateAllGuiProcesses();
