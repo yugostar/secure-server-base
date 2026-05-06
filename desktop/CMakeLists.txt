@@ -1,21 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(SecureServerTray LANGUAGES CXX)
+project(SakuraShield LANGUAGES CXX)
 
-add_executable(SecureServerTray WIN32
+add_executable(SakuraShield WIN32
     src/main.cpp
 )
 
-target_compile_features(SecureServerTray PRIVATE cxx_std_17)
+target_compile_features(SakuraShield PRIVATE cxx_std_17)
 
-target_compile_definitions(SecureServerTray PRIVATE
+target_compile_definitions(SakuraShield PRIVATE
     UNICODE
     _UNICODE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
 )
 
-target_link_libraries(SecureServerTray PRIVATE
+target_link_libraries(SakuraShield PRIVATE
     user32
     shell32
     gdi32
@@ -23,11 +23,11 @@ target_link_libraries(SecureServerTray PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(SecureServerTray PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(SakuraShield PRIVATE /W4 /permissive- /utf-8)
 endif()
 
-set_target_properties(SecureServerTray PROPERTIES
-    OUTPUT_NAME "SecureServerTray"
+set_target_properties(SakuraShield PROPERTIES
+    OUTPUT_NAME "SakuraShield"
 )
 
-install(TARGETS SecureServerTray RUNTIME DESTINATION .)
+install(TARGETS SakuraShield RUNTIME DESTINATION .)
