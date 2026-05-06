@@ -187,7 +187,7 @@ bool ShouldExitAfterServiceBootstrap() {
         return true;
     }
 
-    SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS | SERVICE_START);
+    SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS);
     if (service == nullptr) {
         CloseServiceHandle(manager);
         return true;
@@ -198,14 +198,22 @@ bool ShouldExitAfterServiceBootstrap() {
 
     if (state == SERVICE_RUNNING) {
         shouldExit = false;
-    } else if (state == SERVICE_STOPPED) {
-        StartServiceW(service, 0, nullptr);
-        WaitForServiceRunning(service, 30000);
     } else if (state == SERVICE_START_PENDING) {
-        WaitForServiceRunning(service, 30000);
+        shouldExit = !WaitForServiceRunning(service, 30000);
+    } else if (state == SERVICE_STOPPED) {
+        CloseServiceHandle(service);
+        service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS | SERVICE_START);
+
+        if (service != nullptr) {
+            StartServiceW(service, 0, nullptr);
+            WaitForServiceRunning(service, 30000);
+        }
     }
 
-    CloseServiceHandle(service);
+    if (service != nullptr) {
+        CloseServiceHandle(service);
+    }
+
     CloseServiceHandle(manager);
     return shouldExit;
 }
