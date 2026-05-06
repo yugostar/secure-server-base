@@ -434,6 +434,35 @@ bool StartInstalledService() {
     return started == TRUE || error == ERROR_SERVICE_ALREADY_RUNNING;
 }
 
+bool StopRpcServerByClient() {
+    RPC_WSTR stringBinding = nullptr;
+    handle_t binding = nullptr;
+
+    RPC_STATUS status = RpcStringBindingComposeW(
+        nullptr,
+        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(kRpcProtocol)),
+        nullptr,
+        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(kRpcEndpoint)),
+        nullptr,
+        &stringBinding
+    );
+
+    if (status != RPC_S_OK) {
+        return false;
+    }
+
+    status = RpcBindingFromStringBindingW(stringBinding, &binding);
+    RpcStringFreeW(&stringBinding);
+
+    if (status != RPC_S_OK) {
+        return false;
+    }
+
+    status = RpcMgmtStopServerListening(binding);
+    RpcBindingFree(&binding);
+    return status == RPC_S_OK;
+}
+
 }
 
 extern "C" void SakuraShieldStopService(handle_t) {
@@ -455,6 +484,10 @@ int wmain(int argc, wchar_t** argv) {
 
         if (ContainsFlag(argument, L"--start") || ContainsFlag(argument, L"/start")) {
             return StartInstalledService() ? 0 : 1;
+        }
+
+        if (ContainsFlag(argument, L"--stop") || ContainsFlag(argument, L"/stop")) {
+            return StopRpcServerByClient() ? 0 : 1;
         }
     }
 

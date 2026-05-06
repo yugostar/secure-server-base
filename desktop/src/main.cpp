@@ -124,12 +124,26 @@ bool IsParentServiceProcess() {
         return false;
     }
 
-    const std::wstring parentPath = GetProcessImagePath(parentProcessId);
-    if (parentPath.empty()) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
         return false;
     }
 
-    return EqualsIgnoreCase(GetFileNameFromPath(parentPath), kServiceProcessName);
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    bool result = false;
+
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == parentProcessId) {
+                result = EqualsIgnoreCase(entry.szExeFile, kServiceProcessName);
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return result;
 }
 
 DWORD QueryServiceState(SC_HANDLE service) {
