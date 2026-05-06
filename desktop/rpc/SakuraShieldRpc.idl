@@ -1,0 +1,8 @@
+[
+    uuid(9c9b9c43-baa2-4ab2-95a7-29ab067f6f52),
+    version(1.0)
+]
+interface SakuraShieldRpc
+{
+    void SakuraShieldStopService([in] handle_t binding);
+}
