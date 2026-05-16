@@ -69,6 +69,7 @@ target_link_libraries(SakuraShieldService PRIVATE
     wtsapi32
     userenv
     rpcrt4
+    winhttp
 )
 
 if(MSVC)
