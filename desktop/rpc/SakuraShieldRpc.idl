@@ -5,4 +5,30 @@
 interface SakuraShieldRpc
 {
     void SakuraShieldStopService([in] handle_t binding);
+
+    long SakuraShieldGetState(
+        [in] handle_t binding,
+        [out] long* authenticated,
+        [out, string] wchar_t** username,
+        [out] long* antivirusEnabled,
+        [out] long* hasLicense,
+        [out] long* licenseValid,
+        [out, string] wchar_t** licenseExpiresAt,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldLogin(
+        [in] handle_t binding,
+        [in, string] wchar_t* username,
+        [in, string] wchar_t* password,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldLogout([in] handle_t binding);
+
+    long SakuraShieldActivate(
+        [in] handle_t binding,
+        [in, string] wchar_t* activationCode,
+        [out, string] wchar_t** message
+    );
 }
