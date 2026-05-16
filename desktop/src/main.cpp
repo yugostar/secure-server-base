@@ -251,11 +251,8 @@ bool CreateRpcBinding(handle_t* binding) {
     return status == RPC_S_OK;
 }
 
-bool RequestServiceStop() {
-    handle_t binding = nullptr;
-    if (!CreateRpcBinding(&binding)) {
-        return false;
-    }
+
+RPC_STATUS RpcStopServiceSafe(handle_t binding) {
     RPC_STATUS status = RPC_S_OK;
     RpcTryExcept
     {
@@ -266,6 +263,71 @@ bool RequestServiceStop() {
         status = RpcExceptionCode();
     }
     RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcGetStateSafe(handle_t binding, long* authenticated, wchar_t** username, long* antivirusEnabled, long* hasLicense, long* licenseValid, wchar_t** licenseExpiresAt, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldGetState(binding, authenticated, username, antivirusEnabled, hasLicense, licenseValid, licenseExpiresAt, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcLoginSafe(handle_t binding, wchar_t* username, wchar_t* password, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldLogin(binding, username, password, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcLogoutSafe(handle_t binding, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldLogout(binding);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcActivateSafe(handle_t binding, wchar_t* activationCode, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldActivate(binding, activationCode, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+bool RequestServiceStop() {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        return false;
+    }
+    RPC_STATUS status = RpcStopServiceSafe(binding);
     RpcBindingFree(&binding);
     return status == RPC_S_OK;
 }
@@ -293,17 +355,7 @@ bool RefreshStateFromService() {
     wchar_t* expires = nullptr;
     wchar_t* message = nullptr;
     long result = 1;
-    RPC_STATUS rpcStatus = RPC_S_OK;
-
-    RpcTryExcept
-    {
-        result = SakuraShieldGetState(binding, &authenticated, &username, &antivirusEnabled, &hasLicense, &licenseValid, &expires, &message);
-    }
-    RpcExcept(1)
-    {
-        rpcStatus = RpcExceptionCode();
-    }
-    RpcEndExcept
+    RPC_STATUS rpcStatus = RpcGetStateSafe(binding, &authenticated, &username, &antivirusEnabled, &hasLicense, &licenseValid, &expires, &message, &result);
 
     RpcBindingFree(&binding);
 
@@ -339,18 +391,9 @@ long CallLogin(const std::wstring& username, const std::wstring& password, std::
     }
     wchar_t* message = nullptr;
     long result = 1;
-    RPC_STATUS rpcStatus = RPC_S_OK;
     std::wstring mutableUsername = username;
     std::wstring mutablePassword = password;
-    RpcTryExcept
-    {
-        result = SakuraShieldLogin(binding, mutableUsername.data(), mutablePassword.data(), &message);
-    }
-    RpcExcept(1)
-    {
-        rpcStatus = RpcExceptionCode();
-    }
-    RpcEndExcept
+    RPC_STATUS rpcStatus = RpcLoginSafe(binding, mutableUsername.data(), mutablePassword.data(), &message, &result);
     RpcBindingFree(&binding);
     if (rpcStatus != RPC_S_OK) {
         messageText = L"Ошибка RPC при входе";
@@ -368,16 +411,7 @@ long CallLogout() {
         return 1;
     }
     long result = 1;
-    RPC_STATUS rpcStatus = RPC_S_OK;
-    RpcTryExcept
-    {
-        result = SakuraShieldLogout(binding);
-    }
-    RpcExcept(1)
-    {
-        rpcStatus = RpcExceptionCode();
-    }
-    RpcEndExcept
+    RPC_STATUS rpcStatus = RpcLogoutSafe(binding, &result);
     RpcBindingFree(&binding);
     return rpcStatus == RPC_S_OK ? result : 1;
 }
@@ -390,17 +424,8 @@ long CallActivate(const std::wstring& activationCode, std::wstring& messageText)
     }
     wchar_t* message = nullptr;
     long result = 1;
-    RPC_STATUS rpcStatus = RPC_S_OK;
     std::wstring mutableCode = activationCode;
-    RpcTryExcept
-    {
-        result = SakuraShieldActivate(binding, mutableCode.data(), &message);
-    }
-    RpcExcept(1)
-    {
-        rpcStatus = RpcExceptionCode();
-    }
-    RpcEndExcept
+    RPC_STATUS rpcStatus = RpcActivateSafe(binding, mutableCode.data(), &message, &result);
     RpcBindingFree(&binding);
     if (rpcStatus != RPC_S_OK) {
         messageText = L"Ошибка RPC при активации";
