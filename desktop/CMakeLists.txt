@@ -62,6 +62,8 @@ target_link_libraries(SakuraShield PRIVATE
     gdi32
     advapi32
     rpcrt4
+    comdlg32
+    ole32
 )
 
 target_link_libraries(SakuraShieldService PRIVATE

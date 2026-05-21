@@ -31,4 +31,26 @@ interface SakuraShieldRpc
         [in, string] wchar_t* activationCode,
         [out, string] wchar_t** message
     );
+
+    long SakuraShieldGetAvDatabaseInfo(
+        [in] handle_t binding,
+        [out, string] wchar_t** releaseDate,
+        [out] long* recordCount,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldScanFile(
+        [in] handle_t binding,
+        [in, string] wchar_t* path,
+        [out] long* malicious,
+        [out, string] wchar_t** report
+    );
+
+    long SakuraShieldScanDirectory(
+        [in] handle_t binding,
+        [in, string] wchar_t* path,
+        [out] long* scannedCount,
+        [out] long* detectedCount,
+        [out, string] wchar_t** report
+    );
 }

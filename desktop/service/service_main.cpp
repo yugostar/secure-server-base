@@ -7,6 +7,9 @@
 #include "SakuraShieldRpc.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <cstdint>
+#include <array>
 #include <atomic>
 #include <cstdlib>
 #include <cwctype>
@@ -59,6 +62,38 @@ struct AccountState {
 
 std::mutex g_accountMutex;
 AccountState g_account;
+
+enum class AvObjectType : long {
+    Unknown = 0,
+    PeFile = 1,
+    PowerShellScript = 2
+};
+
+struct AvRecord {
+    unsigned long long objectSignaturePrefix = 0;
+    unsigned long objectSignatureLength = 0;
+    std::vector<unsigned char> objectSignature;
+    unsigned long long offsetBegin = 0;
+    unsigned long long offsetEnd = 0;
+    AvObjectType objectType = AvObjectType::Unknown;
+    std::vector<unsigned char> avRecordSignature;
+    std::wstring threatName;
+};
+
+struct AvScanResult {
+    bool scanned = false;
+    bool malicious = false;
+    std::wstring path;
+    std::wstring objectType;
+    std::wstring threatName;
+    unsigned long long offset = 0;
+    std::wstring message;
+};
+
+std::mutex g_avMutex;
+std::map<unsigned long long, std::vector<AvRecord>> g_avDatabase;
+std::wstring g_avDatabaseReleaseDate;
+
 
 std::wstring GetLogPath() {
     CreateDirectoryW(L"C:\\ProgramData\\SakuraShield", nullptr);
@@ -462,6 +497,300 @@ HttpResponse SendJsonRequest(const std::wstring& method, const std::wstring& end
     return response;
 }
 
+
+unsigned long long ReadPrefixLe(const std::vector<unsigned char>& bytes, size_t offset) {
+    unsigned long long value = 0;
+    for (size_t index = 0; index < 8; ++index) {
+        value |= static_cast<unsigned long long>(bytes[offset + index]) << (index * 8);
+    }
+    return value;
+}
+
+std::vector<unsigned char> BytesFromAscii(const char* text) {
+    std::vector<unsigned char> result;
+    while (*text != '\0') {
+        result.push_back(static_cast<unsigned char>(*text));
+        ++text;
+    }
+    return result;
+}
+
+unsigned long long HashFnv64(const std::vector<unsigned char>& bytes) {
+    unsigned long long hash = 14695981039346656037ULL;
+    for (unsigned char value : bytes) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void AppendUInt64(std::vector<unsigned char>& output, unsigned long long value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+        output.push_back(static_cast<unsigned char>((value >> shift) & 0xFF));
+    }
+}
+
+void AppendUInt32(std::vector<unsigned char>& output, unsigned long value) {
+    for (int shift = 0; shift < 32; shift += 8) {
+        output.push_back(static_cast<unsigned char>((value >> shift) & 0xFF));
+    }
+}
+
+std::vector<unsigned char> HashToBytes(unsigned long long hash) {
+    std::vector<unsigned char> result;
+    AppendUInt64(result, hash);
+    return result;
+}
+
+std::vector<unsigned char> BuildRecordSignatureBytes(const AvRecord& record) {
+    std::vector<unsigned char> data;
+    AppendUInt64(data, record.objectSignaturePrefix);
+    AppendUInt32(data, record.objectSignatureLength);
+    data.insert(data.end(), record.objectSignature.begin(), record.objectSignature.end());
+    AppendUInt64(data, record.offsetBegin);
+    AppendUInt64(data, record.offsetEnd);
+    AppendUInt64(data, static_cast<unsigned long long>(record.objectType));
+    return HashToBytes(HashFnv64(data));
+}
+
+AvRecord MakeAvRecord(const std::wstring& threatName, const std::vector<unsigned char>& signature, unsigned long long offsetBegin, unsigned long long offsetEnd, AvObjectType objectType) {
+    AvRecord record;
+    record.objectSignaturePrefix = ReadPrefixLe(signature, 0);
+    record.objectSignatureLength = static_cast<unsigned long>(signature.size());
+    record.objectSignature = HashToBytes(HashFnv64(signature));
+    record.offsetBegin = offsetBegin;
+    record.offsetEnd = offsetEnd;
+    record.objectType = objectType;
+    record.threatName = threatName;
+    record.avRecordSignature = BuildRecordSignatureBytes(record);
+    return record;
+}
+
+void AddAvRecordLocked(const AvRecord& record) {
+    g_avDatabase[record.objectSignaturePrefix].push_back(record);
+}
+
+void LoadAvDatabase() {
+    std::lock_guard<std::mutex> lock(g_avMutex);
+    g_avDatabase.clear();
+    AddAvRecordLocked(MakeAvRecord(L"Demo.PE.Sakura", BytesFromAscii("MZSAKURA_PE_DEMO_PAYLOAD"), 0, 64, AvObjectType::PeFile));
+    AddAvRecordLocked(MakeAvRecord(L"Demo.PowerShell.Sakura", BytesFromAscii("SakuraShield-Demo-PowerShell-Threat"), 0, 64, AvObjectType::PowerShellScript));
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    wchar_t buffer[64]{};
+    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u", time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+    g_avDatabaseReleaseDate = buffer;
+}
+
+long GetAvRecordCount() {
+    std::lock_guard<std::mutex> lock(g_avMutex);
+    long count = 0;
+    for (const auto& pair : g_avDatabase) {
+        count += static_cast<long>(pair.second.size());
+    }
+    return count;
+}
+
+std::wstring GetAvReleaseDate() {
+    std::lock_guard<std::mutex> lock(g_avMutex);
+    return g_avDatabaseReleaseDate;
+}
+
+bool IsAntivirusReady() {
+    std::lock_guard<std::mutex> lock(g_accountMutex);
+    return g_account.authenticated && g_account.antivirusEnabled;
+}
+
+std::wstring GetExtensionLower(const std::wstring& path) {
+    const size_t dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos) {
+        return L"";
+    }
+    return ToLower(path.substr(dot));
+}
+
+AvObjectType DetectObjectType(const std::wstring& path, const std::vector<unsigned char>& bytes) {
+    if (bytes.size() >= 2 && bytes[0] == 'M' && bytes[1] == 'Z') {
+        return AvObjectType::PeFile;
+    }
+    const std::wstring extension = GetExtensionLower(path);
+    if (extension == L".exe" || extension == L".dll" || extension == L".sys") {
+        return AvObjectType::PeFile;
+    }
+    if (extension == L".ps1" || extension == L".psm1") {
+        return AvObjectType::PowerShellScript;
+    }
+    return AvObjectType::Unknown;
+}
+
+std::wstring ObjectTypeName(AvObjectType type) {
+    switch (type) {
+    case AvObjectType::PeFile: return L"PE файл";
+    case AvObjectType::PowerShellScript: return L"PowerShell Script";
+    default: return L"Неизвестный тип";
+    }
+}
+
+bool ReadFileBytes(const std::wstring& path, std::vector<unsigned char>& bytes) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file, &size) == FALSE || size.QuadPart < 0 || size.QuadPart > 64LL * 1024LL * 1024LL) {
+        CloseHandle(file);
+        return false;
+    }
+    bytes.resize(static_cast<size_t>(size.QuadPart));
+    DWORD totalRead = 0;
+    if (!bytes.empty()) {
+        if (ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &totalRead, nullptr) == FALSE) {
+            CloseHandle(file);
+            bytes.clear();
+            return false;
+        }
+        bytes.resize(totalRead);
+    }
+    CloseHandle(file);
+    return true;
+}
+
+AvScanResult ScanBytes(const std::wstring& path, const std::vector<unsigned char>& bytes) {
+    AvScanResult result;
+    result.scanned = true;
+    result.path = path;
+    if (bytes.size() < 8) {
+        result.objectType = L"Слишком маленький файл";
+        result.message = L"Сигнатура не обнаружена";
+        return result;
+    }
+
+    AvObjectType objectType = DetectObjectType(path, bytes);
+    result.objectType = ObjectTypeName(objectType);
+
+    std::map<unsigned long long, std::vector<AvRecord>> databaseCopy;
+    {
+        std::lock_guard<std::mutex> lock(g_avMutex);
+        databaseCopy = g_avDatabase;
+    }
+
+    for (size_t position = 0; position + 8 <= bytes.size(); ++position) {
+        const unsigned long long prefix = ReadPrefixLe(bytes, position);
+        auto match = databaseCopy.find(prefix);
+        if (match == databaseCopy.end()) {
+            continue;
+        }
+        for (const AvRecord& record : match->second) {
+            if (record.objectType != objectType) {
+                continue;
+            }
+            if (position < record.offsetBegin || position > record.offsetEnd) {
+                continue;
+            }
+            if (record.objectSignatureLength < 8 || position + record.objectSignatureLength > bytes.size()) {
+                continue;
+            }
+            std::vector<unsigned char> candidate(bytes.begin() + position, bytes.begin() + position + record.objectSignatureLength);
+            std::vector<unsigned char> candidateHash = HashToBytes(HashFnv64(candidate));
+            if (candidateHash == record.objectSignature) {
+                result.malicious = true;
+                result.threatName = record.threatName;
+                result.offset = static_cast<unsigned long long>(position);
+                result.message = L"Объект вредоносный";
+                return result;
+            }
+        }
+    }
+
+    result.message = L"Сигнатура не обнаружена";
+    return result;
+}
+
+AvScanResult ScanFileInternal(const std::wstring& path) {
+    std::vector<unsigned char> bytes;
+    if (!ReadFileBytes(path, bytes)) {
+        AvScanResult result;
+        result.path = path;
+        result.message = L"Не удалось открыть файл";
+        return result;
+    }
+    return ScanBytes(path, bytes);
+}
+
+std::wstring FormatFileScanReport(const AvScanResult& result) {
+    std::wstringstream stream;
+    stream << L"Файл: " << result.path << L"\r\n";
+    stream << L"Тип: " << result.objectType << L"\r\n";
+    stream << L"Результат: " << (result.malicious ? L"обнаружена угроза" : L"угроз не найдено") << L"\r\n";
+    if (result.malicious) {
+        stream << L"Угроза: " << result.threatName << L"\r\n";
+        stream << L"Позиция: " << result.offset << L"\r\n";
+    }
+    stream << L"Сообщение: " << result.message;
+    return stream.str();
+}
+
+void ScanDirectoryRecursive(const std::wstring& directory, long& scannedCount, long& detectedCount, std::wstringstream& report, int depth) {
+    if (depth > 12) {
+        return;
+    }
+    std::wstring mask = directory;
+    if (!mask.empty() && mask.back() != L'\\' && mask.back() != L'/') {
+        mask += L"\\";
+    }
+    mask += L"*";
+
+    WIN32_FIND_DATAW data{};
+    HANDLE search = FindFirstFileW(mask.c_str(), &data);
+    if (search == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        std::wstring name = data.cFileName;
+        if (name == L"." || name == L"..") {
+            continue;
+        }
+        std::wstring fullPath = directory;
+        if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') {
+            fullPath += L"\\";
+        }
+        fullPath += name;
+
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            ScanDirectoryRecursive(fullPath, scannedCount, detectedCount, report, depth + 1);
+            continue;
+        }
+
+        ++scannedCount;
+        AvScanResult fileResult = ScanFileInternal(fullPath);
+        if (fileResult.malicious) {
+            ++detectedCount;
+            report << L"[DETECTED] " << fileResult.threatName << L" :: " << fullPath << L"\r\n";
+        }
+    } while (FindNextFileW(search, &data));
+
+    FindClose(search);
+}
+
+std::wstring ScanDirectoryInternal(const std::wstring& path, long& scannedCount, long& detectedCount) {
+    scannedCount = 0;
+    detectedCount = 0;
+    std::wstringstream report;
+    ScanDirectoryRecursive(path, scannedCount, detectedCount, report, 0);
+    if (scannedCount == 0) {
+        return L"Файлы для сканирования не найдены";
+    }
+    if (detectedCount == 0) {
+        return L"Просканировано файлов: " + std::to_wstring(scannedCount) + L"\r\nУгроз не найдено";
+    }
+    std::wstringstream summary;
+    summary << L"Просканировано файлов: " << scannedCount << L"\r\n";
+    summary << L"Обнаружено угроз: " << detectedCount << L"\r\n";
+    summary << report.str();
+    return summary.str();
+}
+
 void ClearLicenseLocked() {
     g_account.hasLicense = false;
     g_account.licenseValid = false;
@@ -519,6 +848,9 @@ bool ApplyTicketResponse(const std::wstring& body, std::wstring& error) {
     g_account.ticketTtlSeconds = ttl;
     g_account.licenseRefreshAt = ScheduleAfterSeconds(ttl);
     g_account.message = g_account.licenseValid ? L"" : L"Лицензия истекла или заблокирована";
+    if (g_account.licenseValid) {
+        LoadAvDatabase();
+    }
     return true;
 }
 
@@ -872,6 +1204,7 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
         return;
     }
 
+    LoadAvDatabase();
     StartBackgroundWorker();
     SetServiceState(SERVICE_RUNNING);
     LogLine(L"service state running");
@@ -1066,6 +1399,52 @@ extern "C" long SakuraShieldActivate(handle_t, wchar_t* activationCode, wchar_t*
     }
     *message = RpcCopyString(error);
     return 4;
+}
+
+
+extern "C" long SakuraShieldGetAvDatabaseInfo(handle_t, wchar_t** releaseDate, long* recordCount, wchar_t** message) {
+    if (releaseDate == nullptr || recordCount == nullptr || message == nullptr) {
+        return 87;
+    }
+    *releaseDate = RpcCopyString(GetAvReleaseDate());
+    *recordCount = GetAvRecordCount();
+    *message = RpcCopyString(L"Антивирусные базы загружены в оперативную память");
+    return 0;
+}
+
+extern "C" long SakuraShieldScanFile(handle_t, wchar_t* path, long* malicious, wchar_t** report) {
+    if (path == nullptr || malicious == nullptr || report == nullptr) {
+        return 87;
+    }
+    if (!IsAntivirusReady()) {
+        *malicious = 0;
+        *report = RpcCopyString(L"Нет активной лицензии. Антивирусная функциональность заблокирована.");
+        return 5;
+    }
+    std::wstring filePath = path;
+    AvScanResult result = ScanFileInternal(filePath);
+    *malicious = result.malicious ? 1 : 0;
+    *report = RpcCopyString(FormatFileScanReport(result));
+    return result.scanned ? 0 : 2;
+}
+
+extern "C" long SakuraShieldScanDirectory(handle_t, wchar_t* path, long* scannedCount, long* detectedCount, wchar_t** report) {
+    if (path == nullptr || scannedCount == nullptr || detectedCount == nullptr || report == nullptr) {
+        return 87;
+    }
+    if (!IsAntivirusReady()) {
+        *scannedCount = 0;
+        *detectedCount = 0;
+        *report = RpcCopyString(L"Нет активной лицензии. Антивирусная функциональность заблокирована.");
+        return 5;
+    }
+    long scanned = 0;
+    long detected = 0;
+    std::wstring text = ScanDirectoryInternal(path, scanned, detected);
+    *scannedCount = scanned;
+    *detectedCount = detected;
+    *report = RpcCopyString(text);
+    return 0;
 }
 
 int wmain(int argc, wchar_t** argv) {

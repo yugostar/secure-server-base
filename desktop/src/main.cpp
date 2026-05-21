@@ -2,6 +2,8 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include <rpc.h>
+#include <shlobj.h>
+#include <commdlg.h>
 
 #include "SakuraShieldRpc.h"
 
@@ -32,6 +34,9 @@ constexpr int kControlActivation = 2004;
 constexpr int kControlActivate = 2005;
 constexpr int kControlLogout = 2006;
 constexpr int kControlRefresh = 2007;
+constexpr int kControlScanFile = 2008;
+constexpr int kControlScanFolder = 2009;
+constexpr int kControlClearScan = 2010;
 
 HINSTANCE g_instance = nullptr;
 HWND g_mainWindow = nullptr;
@@ -53,6 +58,9 @@ HWND g_activationEdit = nullptr;
 HWND g_activateButton = nullptr;
 HWND g_logoutButton = nullptr;
 HWND g_refreshButton = nullptr;
+HWND g_scanFileButton = nullptr;
+HWND g_scanFolderButton = nullptr;
+HWND g_clearScanButton = nullptr;
 
 struct ClientState {
     bool rpcOnline = false;
@@ -63,10 +71,13 @@ struct ClientState {
     std::wstring username;
     std::wstring licenseExpiresAt;
     std::wstring message;
+    std::wstring avDatabaseReleaseDate;
+    long avRecordCount = 0;
 };
 
 ClientState g_state;
 std::wstring g_localMessage;
+std::wstring g_scanReport;
 
 enum class ViewMode {
     Login,
@@ -322,6 +333,49 @@ RPC_STATUS RpcActivateSafe(handle_t binding, wchar_t* activationCode, wchar_t** 
     return status;
 }
 
+
+RPC_STATUS RpcGetAvDatabaseInfoSafe(handle_t binding, wchar_t** releaseDate, long* recordCount, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldGetAvDatabaseInfo(binding, releaseDate, recordCount, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcScanFileSafe(handle_t binding, wchar_t* path, long* malicious, wchar_t** report, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldScanFile(binding, path, malicious, report);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcScanDirectorySafe(handle_t binding, wchar_t* path, long* scannedCount, long* detectedCount, wchar_t** report, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldScanDirectory(binding, path, scannedCount, detectedCount, report);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
 bool RequestServiceStop() {
     handle_t binding = nullptr;
     if (!CreateRpcBinding(&binding)) {
@@ -357,9 +411,8 @@ bool RefreshStateFromService() {
     long result = 1;
     RPC_STATUS rpcStatus = RpcGetStateSafe(binding, &authenticated, &username, &antivirusEnabled, &hasLicense, &licenseValid, &expires, &message, &result);
 
-    RpcBindingFree(&binding);
-
     if (rpcStatus != RPC_S_OK || result != 0) {
+        RpcBindingFree(&binding);
         FreeRpcString(username);
         FreeRpcString(expires);
         FreeRpcString(message);
@@ -367,6 +420,14 @@ bool RefreshStateFromService() {
         g_state.message = L"Не удалось получить состояние службы";
         return false;
     }
+
+    wchar_t* databaseReleaseDate = nullptr;
+    wchar_t* databaseMessage = nullptr;
+    long recordCount = 0;
+    long databaseResult = 1;
+    RPC_STATUS databaseRpcStatus = RpcGetAvDatabaseInfoSafe(binding, &databaseReleaseDate, &recordCount, &databaseMessage, &databaseResult);
+
+    RpcBindingFree(&binding);
 
     g_state.rpcOnline = true;
     g_state.authenticated = authenticated != 0;
@@ -376,10 +437,16 @@ bool RefreshStateFromService() {
     g_state.username = username == nullptr ? L"" : username;
     g_state.licenseExpiresAt = expires == nullptr ? L"" : expires;
     g_state.message = message == nullptr ? L"" : message;
+    if (databaseRpcStatus == RPC_S_OK && databaseResult == 0) {
+        g_state.avDatabaseReleaseDate = databaseReleaseDate == nullptr ? L"" : databaseReleaseDate;
+        g_state.avRecordCount = recordCount;
+    }
 
     FreeRpcString(username);
     FreeRpcString(expires);
     FreeRpcString(message);
+    FreeRpcString(databaseReleaseDate);
+    FreeRpcString(databaseMessage);
     return true;
 }
 
@@ -435,6 +502,79 @@ long CallActivate(const std::wstring& activationCode, std::wstring& messageText)
     messageText = message == nullptr ? L"" : message;
     FreeRpcString(message);
     return result;
+}
+
+
+long CallScanFile(const std::wstring& path, long& malicious, std::wstring& report) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        report = L"RPC-служба недоступна";
+        return 1;
+    }
+    wchar_t* rpcReport = nullptr;
+    long result = 1;
+    malicious = 0;
+    std::wstring mutablePath = path;
+    RPC_STATUS rpcStatus = RpcScanFileSafe(binding, mutablePath.data(), &malicious, &rpcReport, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        report = L"Ошибка RPC при сканировании файла";
+        FreeRpcString(rpcReport);
+        return 1;
+    }
+    report = rpcReport == nullptr ? L"" : rpcReport;
+    FreeRpcString(rpcReport);
+    return result;
+}
+
+long CallScanDirectory(const std::wstring& path, long& scannedCount, long& detectedCount, std::wstring& report) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        report = L"RPC-служба недоступна";
+        return 1;
+    }
+    wchar_t* rpcReport = nullptr;
+    long result = 1;
+    scannedCount = 0;
+    detectedCount = 0;
+    std::wstring mutablePath = path;
+    RPC_STATUS rpcStatus = RpcScanDirectorySafe(binding, mutablePath.data(), &scannedCount, &detectedCount, &rpcReport, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        report = L"Ошибка RPC при сканировании папки";
+        FreeRpcString(rpcReport);
+        return 1;
+    }
+    report = rpcReport == nullptr ? L"" : rpcReport;
+    FreeRpcString(rpcReport);
+    return result;
+}
+
+std::wstring SelectFilePath(HWND owner) {
+    wchar_t path[MAX_PATH]{};
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFile = path;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrFilter = L"Все файлы\0*.*\0";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    return GetOpenFileNameW(&dialog) == TRUE ? std::wstring(path) : L"";
+}
+
+std::wstring SelectFolderPath(HWND owner) {
+    BROWSEINFOW info{};
+    info.hwndOwner = owner;
+    info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    info.lpszTitle = L"Выберите папку для сканирования";
+    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&info);
+    if (item == nullptr) {
+        return L"";
+    }
+    wchar_t path[MAX_PATH]{};
+    BOOL ok = SHGetPathFromIDListW(item, path);
+    CoTaskMemFree(item);
+    return ok == TRUE ? std::wstring(path) : L"";
 }
 
 std::wstring GetWindowTextString(HWND control) {
@@ -590,6 +730,9 @@ void CreateChildControls(HWND window) {
     g_activateButton = CreateChild(L"BUTTON", L"Активировать", BS_PUSHBUTTON, 0, kControlActivate);
     g_logoutButton = CreateChild(L"BUTTON", L"Выйти из аккаунта", BS_PUSHBUTTON, 0, kControlLogout);
     g_refreshButton = CreateChild(L"BUTTON", L"Обновить статус", BS_PUSHBUTTON, 0, kControlRefresh);
+    g_scanFileButton = CreateChild(L"BUTTON", L"Сканировать файл", BS_PUSHBUTTON, 0, kControlScanFile);
+    g_scanFolderButton = CreateChild(L"BUTTON", L"Сканировать папку", BS_PUSHBUTTON, 0, kControlScanFolder);
+    g_clearScanButton = CreateChild(L"BUTTON", L"Очистить результат", BS_PUSHBUTTON, 0, kControlClearScan);
 }
 
 void PositionControls() {
@@ -603,7 +746,10 @@ void PositionControls() {
     MoveWindow(g_activationEdit, left + 120, 235, 320, 28, TRUE);
     MoveWindow(g_activateButton, left + 195, 278, 170, 34, TRUE);
     MoveWindow(g_logoutButton, left + 170, 307, 220, 34, TRUE);
-    MoveWindow(g_refreshButton, left + 185, 260, 190, 34, TRUE);
+    MoveWindow(g_refreshButton, left + 45, 295, 150, 34, TRUE);
+    MoveWindow(g_scanFileButton, left + 205, 295, 150, 34, TRUE);
+    MoveWindow(g_scanFolderButton, left + 365, 295, 150, 34, TRUE);
+    MoveWindow(g_clearScanButton, left + 195, 335, 170, 34, TRUE);
 }
 
 void UpdateViewMode() {
@@ -626,6 +772,9 @@ void UpdateViewMode() {
     ShowWindow(g_activateButton, activationVisible);
     ShowWindow(g_logoutButton, g_state.authenticated ? SW_SHOW : SW_HIDE);
     ShowWindow(g_refreshButton, mainVisible);
+    ShowWindow(g_scanFileButton, mainVisible);
+    ShowWindow(g_scanFolderButton, mainVisible);
+    ShowWindow(g_clearScanButton, mainVisible);
 }
 
 void RefreshStateAndUi() {
@@ -666,10 +815,10 @@ void PaintMainWindow(HWND window) {
     SetBkMode(deviceContext, TRANSPARENT);
 
     DrawCenteredText(deviceContext, L"Sakura Shield ♡", RECT{ 0, 26, clientRect.right, 76 }, g_titleFont, RGB(128, 42, 98), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    DrawCenteredText(deviceContext, L"account guard / activation mode", RECT{ 0, 72, clientRect.right, 102 }, g_smallFont, RGB(154, 77, 126), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawCenteredText(deviceContext, L"account guard / activation / scan mode", RECT{ 0, 72, clientRect.right, 102 }, g_smallFont, RGB(154, 77, 126), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    const int panelWidth = 560;
-    const int panelHeight = 290;
+    const int panelWidth = 620;
+    const int panelHeight = 420;
     const int left = (clientRect.right - panelWidth) / 2;
     RECT panelRect{ left, 122, left + panelWidth, 122 + panelHeight };
     DrawRoundedPanel(deviceContext, panelRect);
@@ -686,9 +835,11 @@ void PaintMainWindow(HWND window) {
         DrawCenteredText(deviceContext, L"Код активации", RECT{ panelRect.left + 120, 205, panelRect.right - 120, 232 }, g_smallFont, RGB(143, 73, 119));
         DrawCenteredText(deviceContext, L"Лицензия отсутствует, истекла или заблокирована. Антивирус заблокирован.", RECT{ panelRect.left + 40, 335, panelRect.right - 40, 372 }, g_smallFont, RGB(150, 58, 105));
     } else {
-        DrawCenteredText(deviceContext, L"Антивирус разблокирован", RECT{ panelRect.left + 30, panelRect.top + 28, panelRect.right - 30, panelRect.top + 65 }, g_statusFont, RGB(91, 48, 83));
-        std::wstring text = L"Пользователь: " + g_state.username + L"\r\nЛицензия активна до:\r\n" + g_state.licenseExpiresAt + L"\r\n\r\n[ OK ] account ........ authenticated\r\n[ OK ] license ........ active\r\n[ OK ] guard mode ..... enabled ♡";
-        DrawCenteredText(deviceContext, text, RECT{ panelRect.left + 48, 176, panelRect.right - 48, 330 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK);
+        DrawCenteredText(deviceContext, L"Антивирус разблокирован", RECT{ panelRect.left + 30, panelRect.top + 20, panelRect.right - 30, panelRect.top + 55 }, g_statusFont, RGB(91, 48, 83));
+        std::wstring text = L"Пользователь: " + g_state.username + L"\r\nЛицензия активна до: " + g_state.licenseExpiresAt + L"\r\nБазы выпущены: " + g_state.avDatabaseReleaseDate + L"\r\nЗаписей в базе: " + std::to_wstring(g_state.avRecordCount) + L"\r\n\r\n[ OK ] license ........ active\r\n[ OK ] av database .... loaded\r\n[ OK ] scan engine .... ready ♡";
+        DrawCenteredText(deviceContext, text, RECT{ panelRect.left + 38, 160, panelRect.right - 38, 292 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK);
+        std::wstring scanText = g_scanReport.empty() ? L"Результаты сканирования появятся здесь" : g_scanReport;
+        DrawCenteredText(deviceContext, scanText, RECT{ panelRect.left + 35, 372, panelRect.right - 35, panelRect.bottom - 18 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK | DT_TOP);
     }
 
     std::wstring message = VisibleMessage();
@@ -723,6 +874,34 @@ void HandleActivation() {
 void HandleLogout() {
     CallLogout();
     g_localMessage = L"Выполнен выход из аккаунта";
+    RefreshStateAndUi();
+}
+
+
+void HandleScanFile() {
+    std::wstring path = SelectFilePath(g_mainWindow);
+    if (path.empty()) {
+        return;
+    }
+    long malicious = 0;
+    std::wstring report;
+    long result = CallScanFile(path, malicious, report);
+    g_scanReport = report;
+    g_localMessage = result == 0 ? (malicious ? L"Файл вредоносный" : L"Файл чистый") : report;
+    RefreshStateAndUi();
+}
+
+void HandleScanFolder() {
+    std::wstring path = SelectFolderPath(g_mainWindow);
+    if (path.empty()) {
+        return;
+    }
+    long scanned = 0;
+    long detected = 0;
+    std::wstring report;
+    long result = CallScanDirectory(path, scanned, detected, report);
+    g_scanReport = report;
+    g_localMessage = result == 0 ? L"Сканирование папки завершено" : report;
     RefreshStateAndUi();
 }
 
@@ -775,6 +954,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         case kControlRefresh:
             g_localMessage = L"Статус обновлен";
+            RefreshStateAndUi();
+            return 0;
+        case kControlScanFile:
+            HandleScanFile();
+            return 0;
+        case kControlScanFolder:
+            HandleScanFolder();
+            return 0;
+        case kControlClearScan:
+            g_scanReport.clear();
+            g_localMessage = L"Результат очищен";
             RefreshStateAndUi();
             return 0;
         default:
@@ -839,7 +1029,7 @@ bool RegisterMainWindowClass() {
 }
 
 HWND CreateMainWindow() {
-    return CreateWindowExW(0, kWindowClassName, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 860, 560, nullptr, nullptr, g_instance, nullptr);
+    return CreateWindowExW(0, kWindowClassName, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 930, 680, nullptr, nullptr, g_instance, nullptr);
 }
 
 }
