@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-desktop-gui:
-    name: Build Win32 GUI and Service
+    name: Build Win32 GUI, Service and Installer
     runs-on: windows-latest
 
     steps:
@@ -19,7 +19,7 @@ jobs:
       - name: Build Release exe
         run: cmake --build build/desktop --config Release --parallel
 
-      - name: Prepare artifact
+      - name: Prepare application artifact
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
@@ -28,8 +28,31 @@ jobs:
           Copy-Item desktop\demo artifacts\demo -Recurse
           Copy-Item desktop\avdb artifacts\avdb -Recurse
 
-      - name: Upload artifact
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: powershell
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc installer\SakuraShield.iss
+          if (-not (Test-Path artifacts\SakuraShieldSetup.exe)) {
+            throw "Installer was not created"
+          }
+
+      - name: Upload application artifact
         uses: actions/upload-artifact@v4
         with:
           name: SakuraShield-suite-windows-x64
-          path: artifacts
+          path: |
+            artifacts/SakuraShield.exe
+            artifacts/SakuraShieldService.exe
+            artifacts/demo
+            artifacts/avdb
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SakuraShield-installer-windows-x64
+          path: artifacts/SakuraShieldSetup.exe

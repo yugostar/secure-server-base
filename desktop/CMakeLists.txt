@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
 project(SakuraShield LANGUAGES C CXX)
+
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 set(RPC_IDL ${CMAKE_CURRENT_SOURCE_DIR}/rpc/SakuraShieldRpc.idl)
 set(RPC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
