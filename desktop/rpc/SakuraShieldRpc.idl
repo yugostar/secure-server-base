@@ -53,4 +53,45 @@ interface SakuraShieldRpc
         [out] long* detectedCount,
         [out, string] wchar_t** report
     );
+
+    long SakuraShieldScanFixedDrives(
+        [in] handle_t binding,
+        [out] long* scannedCount,
+        [out] long* detectedCount,
+        [out, string] wchar_t** report
+    );
+
+    long SakuraShieldSetScheduledScan(
+        [in] handle_t binding,
+        [in] long enabled,
+        [in] long intervalSeconds,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldGetScheduledScanInfo(
+        [in] handle_t binding,
+        [out] long* enabled,
+        [out] long* intervalSeconds,
+        [out, string] wchar_t** lastReport,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldStartDirectoryMonitor(
+        [in] handle_t binding,
+        [in, string] wchar_t* path,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldStopDirectoryMonitor(
+        [in] handle_t binding,
+        [out, string] wchar_t** message
+    );
+
+    long SakuraShieldGetDirectoryMonitorInfo(
+        [in] handle_t binding,
+        [out] long* enabled,
+        [out, string] wchar_t** monitoredPath,
+        [out, string] wchar_t** lastReport,
+        [out, string] wchar_t** message
+    );
 }

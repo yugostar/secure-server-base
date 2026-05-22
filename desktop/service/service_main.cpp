@@ -94,6 +94,16 @@ std::mutex g_avMutex;
 std::map<unsigned long long, std::vector<AvRecord>> g_avDatabase;
 std::wstring g_avDatabaseReleaseDate;
 
+std::mutex g_extraMutex;
+bool g_scheduledScanEnabled = false;
+long g_scheduledScanIntervalSeconds = 300;
+ULONGLONG g_nextScheduledScanAt = 0;
+std::wstring g_scheduledScanLastReport;
+bool g_directoryMonitorEnabled = false;
+std::wstring g_monitoredDirectory;
+ULONGLONG g_nextMonitorScanAt = 0;
+std::wstring g_directoryMonitorLastReport;
+
 
 std::wstring GetLogPath() {
     CreateDirectoryW(L"C:\\ProgramData\\SakuraShield", nullptr);
@@ -791,6 +801,102 @@ std::wstring ScanDirectoryInternal(const std::wstring& path, long& scannedCount,
     return summary.str();
 }
 
+bool IsIgnoredFixedDriveDirectory(const std::wstring& path) {
+    std::wstring lower = ToLower(path);
+    return lower.find(L"\\windows") != std::wstring::npos
+        || lower.find(L"\\program files") != std::wstring::npos
+        || lower.find(L"\\programdata") != std::wstring::npos
+        || lower.find(L"\\appdata") != std::wstring::npos
+        || lower.find(L"$recycle.bin") != std::wstring::npos
+        || lower.find(L"system volume information") != std::wstring::npos;
+}
+
+void ScanDirectoryRecursiveLimited(const std::wstring& directory, long& scannedCount, long& detectedCount, std::wstringstream& report, int depth, long maxFiles) {
+    if (depth > 8 || scannedCount >= maxFiles || IsIgnoredFixedDriveDirectory(directory)) {
+        return;
+    }
+
+    std::wstring mask = directory;
+    if (!mask.empty() && mask.back() != L'\\' && mask.back() != L'/') {
+        mask += L"\\";
+    }
+    mask += L"*";
+
+    WIN32_FIND_DATAW data{};
+    HANDLE search = FindFirstFileW(mask.c_str(), &data);
+    if (search == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        if (scannedCount >= maxFiles) {
+            break;
+        }
+        std::wstring name = data.cFileName;
+        if (name == L"." || name == L"..") {
+            continue;
+        }
+        std::wstring fullPath = directory;
+        if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') {
+            fullPath += L"\\";
+        }
+        fullPath += name;
+
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            continue;
+        }
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            ScanDirectoryRecursiveLimited(fullPath, scannedCount, detectedCount, report, depth + 1, maxFiles);
+            continue;
+        }
+
+        ++scannedCount;
+        AvScanResult fileResult = ScanFileInternal(fullPath);
+        if (fileResult.malicious) {
+            ++detectedCount;
+            report << L"[DETECTED] " << fileResult.threatName << L" :: " << fullPath << L"\r\n";
+        }
+    } while (FindNextFileW(search, &data));
+
+    FindClose(search);
+}
+
+std::wstring ScanFixedDrivesInternal(long& scannedCount, long& detectedCount) {
+    scannedCount = 0;
+    detectedCount = 0;
+    std::wstringstream report;
+    DWORD mask = GetLogicalDrives();
+    const long maxFilesPerDrive = 800;
+
+    for (int index = 0; index < 26; ++index) {
+        if ((mask & (1u << index)) == 0) {
+            continue;
+        }
+        wchar_t root[] = { static_cast<wchar_t>(L'A' + index), L':', L'\\', L'\0' };
+        if (GetDriveTypeW(root) != DRIVE_FIXED) {
+            continue;
+        }
+
+        long beforeScanned = scannedCount;
+        long beforeDetected = detectedCount;
+        report << L"Диск " << root << L" — сканирование запущено\r\n";
+        ScanDirectoryRecursiveLimited(root, scannedCount, detectedCount, report, 0, beforeScanned + maxFilesPerDrive);
+        report << L"Диск " << root << L": файлов " << (scannedCount - beforeScanned)
+               << L", угроз " << (detectedCount - beforeDetected) << L"\r\n";
+    }
+
+    if (scannedCount == 0) {
+        return L"Несъемные диски не найдены или файлы для сканирования недоступны";
+    }
+
+    std::wstringstream summary;
+    summary << L"Сканирование всех несъемных дисков завершено\r\n";
+    summary << L"Просканировано файлов: " << scannedCount << L"\r\n";
+    summary << L"Обнаружено угроз: " << detectedCount << L"\r\n";
+    summary << report.str();
+    return summary.str();
+}
+
 void ClearLicenseLocked() {
     g_account.hasLicense = false;
     g_account.licenseValid = false;
@@ -921,16 +1027,41 @@ DWORD WINAPI BackgroundWorker(LPVOID) {
         ULONGLONG now = GetTickCount64Safe();
         bool needTokenRefresh = false;
         bool needLicenseRefresh = false;
+        bool needScheduledScan = false;
+        bool needMonitorScan = false;
+        std::wstring monitorPath;
         {
             std::lock_guard<std::mutex> lock(g_accountMutex);
             needTokenRefresh = g_account.authenticated && g_account.tokenRefreshAt != 0 && now >= g_account.tokenRefreshAt;
             needLicenseRefresh = g_account.authenticated && g_account.hasLicense && g_account.licenseRefreshAt != 0 && now >= g_account.licenseRefreshAt;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_extraMutex);
+            needScheduledScan = g_scheduledScanEnabled && g_nextScheduledScanAt != 0 && now >= g_nextScheduledScanAt;
+            needMonitorScan = g_directoryMonitorEnabled && g_nextMonitorScanAt != 0 && now >= g_nextMonitorScanAt;
+            monitorPath = g_monitoredDirectory;
         }
         if (needTokenRefresh) {
             RefreshTokens();
         }
         if (needLicenseRefresh) {
             RequestLicenseCheck();
+        }
+        if (needScheduledScan && IsAntivirusReady()) {
+            long scanned = 0;
+            long detected = 0;
+            std::wstring report = ScanFixedDrivesInternal(scanned, detected);
+            std::lock_guard<std::mutex> lock(g_extraMutex);
+            g_scheduledScanLastReport = report;
+            g_nextScheduledScanAt = GetTickCount64Safe() + static_cast<ULONGLONG>(g_scheduledScanIntervalSeconds) * 1000ULL;
+        }
+        if (needMonitorScan && IsAntivirusReady() && !monitorPath.empty()) {
+            long scanned = 0;
+            long detected = 0;
+            std::wstring report = ScanDirectoryInternal(monitorPath, scanned, detected);
+            std::lock_guard<std::mutex> lock(g_extraMutex);
+            g_directoryMonitorLastReport = L"Мониторинг: " + monitorPath + L"\r\n" + report;
+            g_nextMonitorScanAt = GetTickCount64Safe() + 3000ULL;
         }
         Sleep(1000);
     }
@@ -1444,6 +1575,106 @@ extern "C" long SakuraShieldScanDirectory(handle_t, wchar_t* path, long* scanned
     *scannedCount = scanned;
     *detectedCount = detected;
     *report = RpcCopyString(text);
+    return 0;
+}
+
+extern "C" long SakuraShieldScanFixedDrives(handle_t, long* scannedCount, long* detectedCount, wchar_t** report) {
+    if (scannedCount == nullptr || detectedCount == nullptr || report == nullptr) {
+        return 87;
+    }
+    if (!IsAntivirusReady()) {
+        *scannedCount = 0;
+        *detectedCount = 0;
+        *report = RpcCopyString(L"Нет активной лицензии. Антивирусная функциональность заблокирована.");
+        return 5;
+    }
+    long scanned = 0;
+    long detected = 0;
+    std::wstring text = ScanFixedDrivesInternal(scanned, detected);
+    *scannedCount = scanned;
+    *detectedCount = detected;
+    *report = RpcCopyString(text);
+    return 0;
+}
+
+extern "C" long SakuraShieldSetScheduledScan(handle_t, long enabled, long intervalSeconds, wchar_t** message) {
+    if (message == nullptr) {
+        return 87;
+    }
+    if (!IsAntivirusReady()) {
+        *message = RpcCopyString(L"Нет активной лицензии. Расписание сканирования заблокировано.");
+        return 5;
+    }
+    if (intervalSeconds < 60) {
+        intervalSeconds = 60;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_extraMutex);
+        g_scheduledScanEnabled = enabled != 0;
+        g_scheduledScanIntervalSeconds = intervalSeconds;
+        g_nextScheduledScanAt = g_scheduledScanEnabled ? GetTickCount64Safe() + 5000ULL : 0;
+        if (!g_scheduledScanEnabled) {
+            g_scheduledScanLastReport = L"Сканирование по расписанию отключено";
+        }
+    }
+    *message = RpcCopyString(enabled != 0 ? L"Сканирование по расписанию включено" : L"Сканирование по расписанию отключено");
+    return 0;
+}
+
+extern "C" long SakuraShieldGetScheduledScanInfo(handle_t, long* enabled, long* intervalSeconds, wchar_t** lastReport, wchar_t** message) {
+    if (enabled == nullptr || intervalSeconds == nullptr || lastReport == nullptr || message == nullptr) {
+        return 87;
+    }
+    std::lock_guard<std::mutex> lock(g_extraMutex);
+    *enabled = g_scheduledScanEnabled ? 1 : 0;
+    *intervalSeconds = g_scheduledScanIntervalSeconds;
+    *lastReport = RpcCopyString(g_scheduledScanLastReport);
+    *message = RpcCopyString(g_scheduledScanEnabled ? L"Расписание активно" : L"Расписание отключено");
+    return 0;
+}
+
+extern "C" long SakuraShieldStartDirectoryMonitor(handle_t, wchar_t* path, wchar_t** message) {
+    if (path == nullptr || message == nullptr) {
+        return 87;
+    }
+    if (!IsAntivirusReady()) {
+        *message = RpcCopyString(L"Нет активной лицензии. Мониторинг директорий заблокирован.");
+        return 5;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_extraMutex);
+        g_directoryMonitorEnabled = true;
+        g_monitoredDirectory = path;
+        g_nextMonitorScanAt = GetTickCount64Safe() + 1000ULL;
+        g_directoryMonitorLastReport = L"Мониторинг включен: " + g_monitoredDirectory;
+    }
+    *message = RpcCopyString(L"Мониторинг директории включен");
+    return 0;
+}
+
+extern "C" long SakuraShieldStopDirectoryMonitor(handle_t, wchar_t** message) {
+    if (message == nullptr) {
+        return 87;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_extraMutex);
+        g_directoryMonitorEnabled = false;
+        g_nextMonitorScanAt = 0;
+        g_directoryMonitorLastReport = L"Мониторинг директории отключен";
+    }
+    *message = RpcCopyString(L"Мониторинг директории отключен");
+    return 0;
+}
+
+extern "C" long SakuraShieldGetDirectoryMonitorInfo(handle_t, long* enabled, wchar_t** monitoredPath, wchar_t** lastReport, wchar_t** message) {
+    if (enabled == nullptr || monitoredPath == nullptr || lastReport == nullptr || message == nullptr) {
+        return 87;
+    }
+    std::lock_guard<std::mutex> lock(g_extraMutex);
+    *enabled = g_directoryMonitorEnabled ? 1 : 0;
+    *monitoredPath = RpcCopyString(g_monitoredDirectory);
+    *lastReport = RpcCopyString(g_directoryMonitorLastReport);
+    *message = RpcCopyString(g_directoryMonitorEnabled ? L"Мониторинг активен" : L"Мониторинг отключен");
     return 0;
 }
 
