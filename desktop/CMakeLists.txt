@@ -88,3 +88,4 @@ set_target_properties(SakuraShieldService PROPERTIES
 )
 
 install(TARGETS SakuraShield SakuraShieldService RUNTIME DESTINATION .)
+install(DIRECTORY avdb DESTINATION .)

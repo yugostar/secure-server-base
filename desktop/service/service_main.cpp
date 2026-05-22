@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <filesystem>
 #include <cstdint>
+#include <cstddef>
 #include <array>
 #include <atomic>
 #include <cstdlib>
 #include <cwctype>
+#include <ctime>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -103,6 +105,15 @@ bool g_directoryMonitorEnabled = false;
 std::wstring g_monitoredDirectory;
 ULONGLONG g_nextMonitorScanAt = 0;
 std::wstring g_directoryMonitorLastReport;
+
+constexpr char kAvDatabaseMagic[8] = {'S', 'S', 'A', 'V', 'D', 'B', '2', '5'};
+constexpr unsigned long kAvDatabaseVersion = 1;
+constexpr wchar_t kAvDatabaseDirectoryName[] = L"avdb";
+constexpr wchar_t kAvDatabaseCurrentFileName[] = L"sakura_current.savdb";
+constexpr wchar_t kAvDatabaseBackupFileName[] = L"sakura_backup.savdb";
+constexpr wchar_t kAvDatabaseDefaultFileName[] = L"sakura_default.savdb";
+constexpr ULONGLONG kAvDatabaseUpdateIntervalMs = 5ULL * 60ULL * 1000ULL;
+ULONGLONG g_nextAvDatabaseUpdateAt = 0;
 
 
 std::wstring GetLogPath() {
@@ -552,6 +563,37 @@ std::vector<unsigned char> HashToBytes(unsigned long long hash) {
     return result;
 }
 
+bool ReadUInt32(const std::vector<unsigned char>& input, size_t& offset, unsigned long& value) {
+    if (offset + 4 > input.size()) {
+        return false;
+    }
+    value = 0;
+    for (int shift = 0; shift < 32; shift += 8) {
+        value |= static_cast<unsigned long>(input[offset++]) << shift;
+    }
+    return true;
+}
+
+bool ReadUInt64(const std::vector<unsigned char>& input, size_t& offset, unsigned long long& value) {
+    if (offset + 8 > input.size()) {
+        return false;
+    }
+    value = 0;
+    for (int shift = 0; shift < 64; shift += 8) {
+        value |= static_cast<unsigned long long>(input[offset++]) << shift;
+    }
+    return true;
+}
+
+bool ReadByteVector(const std::vector<unsigned char>& input, size_t& offset, unsigned long length, std::vector<unsigned char>& value) {
+    if (offset + length > input.size()) {
+        return false;
+    }
+    value.assign(input.begin() + static_cast<std::ptrdiff_t>(offset), input.begin() + static_cast<std::ptrdiff_t>(offset + length));
+    offset += length;
+    return true;
+}
+
 std::vector<unsigned char> BuildRecordSignatureBytes(const AvRecord& record) {
     std::vector<unsigned char> data;
     AppendUInt64(data, record.objectSignaturePrefix);
@@ -576,20 +618,366 @@ AvRecord MakeAvRecord(const std::wstring& threatName, const std::vector<unsigned
     return record;
 }
 
+
+std::vector<AvRecord> BuildDefaultAvRecords() {
+    std::vector<AvRecord> records;
+    records.push_back(MakeAvRecord(L"Demo.PE.Sakura", BytesFromAscii("MZSAKURA_PE_DEMO_PAYLOAD"), 0, 64, AvObjectType::PeFile));
+    records.push_back(MakeAvRecord(L"Demo.PowerShell.Sakura", BytesFromAscii("SakuraShield-Demo-PowerShell-Threat"), 0, 64, AvObjectType::PowerShellScript));
+    return records;
+}
+
 void AddAvRecordLocked(const AvRecord& record) {
     g_avDatabase[record.objectSignaturePrefix].push_back(record);
 }
 
+std::wstring FormatUnixTimeUtc(unsigned long long value) {
+    std::time_t timeValue = static_cast<std::time_t>(value);
+    std::tm timeInfo{};
+    gmtime_s(&timeInfo, &timeValue);
+    wchar_t buffer[64]{};
+    swprintf_s(buffer, L"%04d-%02d-%02d %02d:%02d:%02d UTC",
+        timeInfo.tm_year + 1900,
+        timeInfo.tm_mon + 1,
+        timeInfo.tm_mday,
+        timeInfo.tm_hour,
+        timeInfo.tm_min,
+        timeInfo.tm_sec);
+    return buffer;
+}
+
+unsigned long long CurrentUnixTime() {
+    return static_cast<unsigned long long>(std::time(nullptr));
+}
+
+std::wstring GetProgramDataAvDirectory() {
+    CreateDirectoryW(L"C:\\ProgramData\\SakuraShield", nullptr);
+    std::wstring path = L"C:\\ProgramData\\SakuraShield\\";
+    path += kAvDatabaseDirectoryName;
+    CreateDirectoryW(path.c_str(), nullptr);
+    return path;
+}
+
+std::wstring JoinPath(const std::wstring& left, const std::wstring& right) {
+    if (left.empty()) {
+        return right;
+    }
+    if (left.back() == L'\\' || left.back() == L'/') {
+        return left + right;
+    }
+    return left + L"\\" + right;
+}
+
+std::wstring GetBundledAvDirectory() {
+    return JoinPath(GetDirectoryName(GetModulePath()), kAvDatabaseDirectoryName);
+}
+
+std::wstring GetCurrentAvDatabasePath() {
+    return JoinPath(GetProgramDataAvDirectory(), kAvDatabaseCurrentFileName);
+}
+
+std::wstring GetBackupAvDatabasePath() {
+    return JoinPath(GetProgramDataAvDirectory(), kAvDatabaseBackupFileName);
+}
+
+std::wstring GetBundledDefaultAvDatabasePath() {
+    return JoinPath(GetBundledAvDirectory(), kAvDatabaseDefaultFileName);
+}
+
+std::vector<unsigned char> SerializeAvRecord(const AvRecord& record) {
+    std::vector<unsigned char> data;
+    AppendUInt64(data, record.objectSignaturePrefix);
+    AppendUInt32(data, record.objectSignatureLength);
+    AppendUInt32(data, static_cast<unsigned long>(record.objectSignature.size()));
+    data.insert(data.end(), record.objectSignature.begin(), record.objectSignature.end());
+    AppendUInt64(data, record.offsetBegin);
+    AppendUInt64(data, record.offsetEnd);
+    AppendUInt32(data, static_cast<unsigned long>(record.objectType));
+
+    const std::string threatName = WideToUtf8(record.threatName);
+    AppendUInt32(data, static_cast<unsigned long>(threatName.size()));
+    data.insert(data.end(), threatName.begin(), threatName.end());
+
+    AppendUInt32(data, static_cast<unsigned long>(record.avRecordSignature.size()));
+    data.insert(data.end(), record.avRecordSignature.begin(), record.avRecordSignature.end());
+    return data;
+}
+
+std::vector<unsigned char> SerializeAvDatabase(const std::vector<AvRecord>& records, unsigned long long releaseUnixTime) {
+    std::vector<unsigned char> recordPayload;
+    for (const AvRecord& record : records) {
+        const std::vector<unsigned char> recordBytes = SerializeAvRecord(record);
+        recordPayload.insert(recordPayload.end(), recordBytes.begin(), recordBytes.end());
+    }
+
+    std::vector<unsigned char> manifestData;
+    manifestData.insert(manifestData.end(), kAvDatabaseMagic, kAvDatabaseMagic + 8);
+    AppendUInt32(manifestData, kAvDatabaseVersion);
+    AppendUInt64(manifestData, releaseUnixTime);
+    AppendUInt32(manifestData, static_cast<unsigned long>(records.size()));
+    manifestData.insert(manifestData.end(), recordPayload.begin(), recordPayload.end());
+
+    const unsigned long long manifestSignature = HashFnv64(manifestData);
+
+    std::vector<unsigned char> fileData;
+    fileData.insert(fileData.end(), kAvDatabaseMagic, kAvDatabaseMagic + 8);
+    AppendUInt32(fileData, kAvDatabaseVersion);
+    AppendUInt64(fileData, releaseUnixTime);
+    AppendUInt32(fileData, static_cast<unsigned long>(records.size()));
+    AppendUInt64(fileData, manifestSignature);
+    fileData.insert(fileData.end(), recordPayload.begin(), recordPayload.end());
+    return fileData;
+}
+
+bool WriteBytesToFile(const std::wstring& path, const std::vector<unsigned char>& bytes) {
+    std::ofstream output(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+        return false;
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return output.good();
+}
+
+bool ReadBytesFromFile(const std::wstring& path, std::vector<unsigned char>& bytes) {
+    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    if (!input.is_open()) {
+        return false;
+    }
+    input.seekg(0, std::ios::end);
+    const std::streamoff size = input.tellg();
+    if (size < 0 || size > 64LL * 1024LL * 1024LL) {
+        return false;
+    }
+    input.seekg(0, std::ios::beg);
+    bytes.resize(static_cast<size_t>(size));
+    if (!bytes.empty()) {
+        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    }
+    return input.good() || input.eof();
+}
+
+bool CopyFileOverwrite(const std::wstring& from, const std::wstring& to) {
+    std::error_code error;
+    std::filesystem::create_directories(std::filesystem::path(to).parent_path(), error);
+    error.clear();
+    std::filesystem::copy_file(std::filesystem::path(from), std::filesystem::path(to), std::filesystem::copy_options::overwrite_existing, error);
+    return !error;
+}
+
+bool WriteBuiltInDefaultAvDatabaseFile(const std::wstring& path) {
+    const std::vector<AvRecord> records = BuildDefaultAvRecords();
+    const std::vector<unsigned char> bytes = SerializeAvDatabase(records, CurrentUnixTime());
+    return WriteBytesToFile(path, bytes);
+}
+
+bool EnsureCurrentAvDatabaseFile() {
+    const std::wstring current = GetCurrentAvDatabasePath();
+    if (std::filesystem::exists(std::filesystem::path(current))) {
+        return true;
+    }
+    const std::wstring bundled = GetBundledDefaultAvDatabasePath();
+    if (std::filesystem::exists(std::filesystem::path(bundled)) && CopyFileOverwrite(bundled, current)) {
+        return true;
+    }
+    return WriteBuiltInDefaultAvDatabaseFile(current);
+}
+
+bool TryParseAvDatabaseFile(const std::wstring& path, std::map<unsigned long long, std::vector<AvRecord>>& database, std::wstring& releaseDate, long& skippedRecords, std::wstring& error) {
+    std::vector<unsigned char> bytes;
+    if (!ReadBytesFromFile(path, bytes)) {
+        error = L"Не удалось прочитать файл базы";
+        return false;
+    }
+    if (bytes.size() < 32) {
+        error = L"Файл базы слишком маленький";
+        return false;
+    }
+
+    for (size_t index = 0; index < 8; ++index) {
+        if (bytes[index] != static_cast<unsigned char>(kAvDatabaseMagic[index])) {
+            error = L"Некорректная сигнатура формата базы";
+            return false;
+        }
+    }
+
+    size_t offset = 8;
+    unsigned long version = 0;
+    unsigned long long releaseUnix = 0;
+    unsigned long recordCount = 0;
+    unsigned long long expectedManifestSignature = 0;
+    if (!ReadUInt32(bytes, offset, version) || !ReadUInt64(bytes, offset, releaseUnix) || !ReadUInt32(bytes, offset, recordCount) || !ReadUInt64(bytes, offset, expectedManifestSignature)) {
+        error = L"Некорректный заголовок базы";
+        return false;
+    }
+    if (version != kAvDatabaseVersion) {
+        error = L"Неподдерживаемая версия базы";
+        return false;
+    }
+
+    std::vector<unsigned char> manifestData;
+    manifestData.insert(manifestData.end(), bytes.begin(), bytes.begin() + 24);
+    manifestData.insert(manifestData.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.end());
+    const unsigned long long actualManifestSignature = HashFnv64(manifestData);
+    if (actualManifestSignature != expectedManifestSignature) {
+        error = L"Проверка ЭЦП манифеста не пройдена";
+        return false;
+    }
+
+    skippedRecords = 0;
+    database.clear();
+    for (unsigned long index = 0; index < recordCount; ++index) {
+        AvRecord record;
+        unsigned long signatureHashLength = 0;
+        unsigned long objectType = 0;
+        unsigned long threatNameLength = 0;
+        unsigned long recordSignatureLength = 0;
+        std::vector<unsigned char> threatNameBytes;
+
+        if (!ReadUInt64(bytes, offset, record.objectSignaturePrefix)
+            || !ReadUInt32(bytes, offset, record.objectSignatureLength)
+            || !ReadUInt32(bytes, offset, signatureHashLength)
+            || !ReadByteVector(bytes, offset, signatureHashLength, record.objectSignature)
+            || !ReadUInt64(bytes, offset, record.offsetBegin)
+            || !ReadUInt64(bytes, offset, record.offsetEnd)
+            || !ReadUInt32(bytes, offset, objectType)
+            || !ReadUInt32(bytes, offset, threatNameLength)
+            || !ReadByteVector(bytes, offset, threatNameLength, threatNameBytes)
+            || !ReadUInt32(bytes, offset, recordSignatureLength)
+            || !ReadByteVector(bytes, offset, recordSignatureLength, record.avRecordSignature)) {
+            error = L"Некорректная структура записи базы";
+            return false;
+        }
+
+        record.objectType = static_cast<AvObjectType>(objectType);
+        record.threatName = Utf8ToWide(std::string(threatNameBytes.begin(), threatNameBytes.end()));
+
+        const std::vector<unsigned char> actualRecordSignature = BuildRecordSignatureBytes(record);
+        if (actualRecordSignature != record.avRecordSignature) {
+            ++skippedRecords;
+            LogLine(L"AV database record skipped: invalid record signature");
+            continue;
+        }
+
+        database[record.objectSignaturePrefix].push_back(record);
+    }
+
+    releaseDate = FormatUnixTimeUtc(releaseUnix);
+    return true;
+}
+
+void ApplyLoadedAvDatabase(const std::map<unsigned long long, std::vector<AvRecord>>& database, const std::wstring& releaseDate) {
+    std::lock_guard<std::mutex> lock(g_avMutex);
+    g_avDatabase = database;
+    g_avDatabaseReleaseDate = releaseDate;
+}
+
+bool TryLoadAvDatabaseFromFile(const std::wstring& path, const std::wstring& sourceName) {
+    std::map<unsigned long long, std::vector<AvRecord>> database;
+    std::wstring releaseDate;
+    std::wstring error;
+    long skippedRecords = 0;
+    if (!TryParseAvDatabaseFile(path, database, releaseDate, skippedRecords, error)) {
+        LogLine(L"AV database load failed from " + sourceName + L": " + error);
+        return false;
+    }
+    ApplyLoadedAvDatabase(database, releaseDate);
+    std::wstringstream stream;
+    long loadedCount = 0;
+    for (const auto& pair : database) {
+        loadedCount += static_cast<long>(pair.second.size());
+    }
+    stream << L"AV database loaded from " << sourceName << L", records=" << loadedCount << L", skipped=" << skippedRecords;
+    LogLine(stream.str());
+    return true;
+}
+
+bool BackupCurrentAvDatabase() {
+    const std::wstring current = GetCurrentAvDatabasePath();
+    const std::wstring backup = GetBackupAvDatabasePath();
+    if (!std::filesystem::exists(std::filesystem::path(current))) {
+        return false;
+    }
+    const bool copied = CopyFileOverwrite(current, backup);
+    LogLine(copied ? L"AV database backup created" : L"AV database backup failed");
+    return copied;
+}
+
+bool RestoreAvDatabaseFromBackup() {
+    const std::wstring backup = GetBackupAvDatabasePath();
+    const std::wstring current = GetCurrentAvDatabasePath();
+    if (!std::filesystem::exists(std::filesystem::path(backup))) {
+        return false;
+    }
+    if (!CopyFileOverwrite(backup, current)) {
+        return false;
+    }
+    return TryLoadAvDatabaseFromFile(current, L"backup");
+}
+
+bool InstallDefaultAvDatabase() {
+    const std::wstring bundled = GetBundledDefaultAvDatabasePath();
+    const std::wstring current = GetCurrentAvDatabasePath();
+    if (std::filesystem::exists(std::filesystem::path(bundled)) && CopyFileOverwrite(bundled, current)) {
+        return true;
+    }
+    return WriteBuiltInDefaultAvDatabaseFile(current);
+}
+
+bool ForceUpdateAvDatabaseFromDefaultPackage() {
+    LogLine(L"Forced AV database update from default package started");
+    BackupCurrentAvDatabase();
+    if (!InstallDefaultAvDatabase()) {
+        LogLine(L"Forced AV database update failed: default database unavailable");
+        return false;
+    }
+    if (TryLoadAvDatabaseFromFile(GetCurrentAvDatabasePath(), L"forced update")) {
+        LogLine(L"Forced AV database update completed");
+        return true;
+    }
+    LogLine(L"Forced AV database update produced invalid database, rollback started");
+    return RestoreAvDatabaseFromBackup();
+}
+
+bool UpdateAvDatabaseFromDefaultPackage() {
+    LogLine(L"Scheduled AV database update started");
+    BackupCurrentAvDatabase();
+    if (!InstallDefaultAvDatabase()) {
+        LogLine(L"Scheduled AV database update failed: cannot install update package");
+        return false;
+    }
+    if (TryLoadAvDatabaseFromFile(GetCurrentAvDatabasePath(), L"updated database")) {
+        LogLine(L"Scheduled AV database update completed");
+        return true;
+    }
+    LogLine(L"Scheduled AV database update failed: rollback to backup");
+    return RestoreAvDatabaseFromBackup();
+}
+
 void LoadAvDatabase() {
+    EnsureCurrentAvDatabaseFile();
+
+    if (TryLoadAvDatabaseFromFile(GetCurrentAvDatabasePath(), L"current disk database")) {
+        g_nextAvDatabaseUpdateAt = GetTickCount64Safe() + kAvDatabaseUpdateIntervalMs;
+        return;
+    }
+
+    if (RestoreAvDatabaseFromBackup()) {
+        g_nextAvDatabaseUpdateAt = GetTickCount64Safe() + kAvDatabaseUpdateIntervalMs;
+        return;
+    }
+
+    if (ForceUpdateAvDatabaseFromDefaultPackage()) {
+        g_nextAvDatabaseUpdateAt = GetTickCount64Safe() + kAvDatabaseUpdateIntervalMs;
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(g_avMutex);
     g_avDatabase.clear();
-    AddAvRecordLocked(MakeAvRecord(L"Demo.PE.Sakura", BytesFromAscii("MZSAKURA_PE_DEMO_PAYLOAD"), 0, 64, AvObjectType::PeFile));
-    AddAvRecordLocked(MakeAvRecord(L"Demo.PowerShell.Sakura", BytesFromAscii("SakuraShield-Demo-PowerShell-Threat"), 0, 64, AvObjectType::PowerShellScript));
-    SYSTEMTIME time{};
-    GetLocalTime(&time);
-    wchar_t buffer[64]{};
-    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u", time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
-    g_avDatabaseReleaseDate = buffer;
+    for (const AvRecord& record : BuildDefaultAvRecords()) {
+        AddAvRecordLocked(record);
+    }
+    g_avDatabaseReleaseDate = L"built-in fallback";
+    g_nextAvDatabaseUpdateAt = GetTickCount64Safe() + kAvDatabaseUpdateIntervalMs;
+    LogLine(L"AV database loaded from built-in fallback");
 }
 
 long GetAvRecordCount() {
@@ -1029,6 +1417,7 @@ DWORD WINAPI BackgroundWorker(LPVOID) {
         bool needLicenseRefresh = false;
         bool needScheduledScan = false;
         bool needMonitorScan = false;
+        bool needAvDatabaseUpdate = false;
         std::wstring monitorPath;
         {
             std::lock_guard<std::mutex> lock(g_accountMutex);
@@ -1041,11 +1430,16 @@ DWORD WINAPI BackgroundWorker(LPVOID) {
             needMonitorScan = g_directoryMonitorEnabled && g_nextMonitorScanAt != 0 && now >= g_nextMonitorScanAt;
             monitorPath = g_monitoredDirectory;
         }
+        needAvDatabaseUpdate = g_nextAvDatabaseUpdateAt != 0 && now >= g_nextAvDatabaseUpdateAt;
         if (needTokenRefresh) {
             RefreshTokens();
         }
         if (needLicenseRefresh) {
             RequestLicenseCheck();
+        }
+        if (needAvDatabaseUpdate) {
+            UpdateAvDatabaseFromDefaultPackage();
+            g_nextAvDatabaseUpdateAt = GetTickCount64Safe() + kAvDatabaseUpdateIntervalMs;
         }
         if (needScheduledScan && IsAntivirusReady()) {
             long scanned = 0;
@@ -1539,7 +1933,7 @@ extern "C" long SakuraShieldGetAvDatabaseInfo(handle_t, wchar_t** releaseDate, l
     }
     *releaseDate = RpcCopyString(GetAvReleaseDate());
     *recordCount = GetAvRecordCount();
-    *message = RpcCopyString(L"Антивирусные базы загружены в оперативную память");
+    *message = RpcCopyString(L"Антивирусные базы загружены с диска и проверены");
     return 0;
 }
 
