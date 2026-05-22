@@ -37,6 +37,10 @@ constexpr int kControlRefresh = 2007;
 constexpr int kControlScanFile = 2008;
 constexpr int kControlScanFolder = 2009;
 constexpr int kControlClearScan = 2010;
+constexpr int kControlScanDrives = 2011;
+constexpr int kControlScheduleScan = 2012;
+constexpr int kControlStartMonitor = 2013;
+constexpr int kControlStopMonitor = 2014;
 
 HINSTANCE g_instance = nullptr;
 HWND g_mainWindow = nullptr;
@@ -61,6 +65,10 @@ HWND g_refreshButton = nullptr;
 HWND g_scanFileButton = nullptr;
 HWND g_scanFolderButton = nullptr;
 HWND g_clearScanButton = nullptr;
+HWND g_scanDrivesButton = nullptr;
+HWND g_scheduleScanButton = nullptr;
+HWND g_startMonitorButton = nullptr;
+HWND g_stopMonitorButton = nullptr;
 
 struct ClientState {
     bool rpcOnline = false;
@@ -376,6 +384,90 @@ RPC_STATUS RpcScanDirectorySafe(handle_t binding, wchar_t* path, long* scannedCo
     return status;
 }
 
+RPC_STATUS RpcScanFixedDrivesSafe(handle_t binding, long* scannedCount, long* detectedCount, wchar_t** report, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldScanFixedDrives(binding, scannedCount, detectedCount, report);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcSetScheduledScanSafe(handle_t binding, long enabled, long intervalSeconds, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldSetScheduledScan(binding, enabled, intervalSeconds, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcGetScheduledScanInfoSafe(handle_t binding, long* enabled, long* intervalSeconds, wchar_t** lastReport, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldGetScheduledScanInfo(binding, enabled, intervalSeconds, lastReport, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcStartDirectoryMonitorSafe(handle_t binding, wchar_t* path, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldStartDirectoryMonitor(binding, path, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcStopDirectoryMonitorSafe(handle_t binding, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldStopDirectoryMonitor(binding, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
+RPC_STATUS RpcGetDirectoryMonitorInfoSafe(handle_t binding, long* enabled, wchar_t** monitoredPath, wchar_t** lastReport, wchar_t** message, long* result) {
+    RPC_STATUS status = RPC_S_OK;
+    RpcTryExcept
+    {
+        *result = SakuraShieldGetDirectoryMonitorInfo(binding, enabled, monitoredPath, lastReport, message);
+    }
+    RpcExcept(1)
+    {
+        status = RpcExceptionCode();
+    }
+    RpcEndExcept
+    return status;
+}
+
 bool RequestServiceStop() {
     handle_t binding = nullptr;
     if (!CreateRpcBinding(&binding)) {
@@ -547,6 +639,141 @@ long CallScanDirectory(const std::wstring& path, long& scannedCount, long& detec
     }
     report = rpcReport == nullptr ? L"" : rpcReport;
     FreeRpcString(rpcReport);
+    return result;
+}
+
+long CallScanFixedDrives(long& scannedCount, long& detectedCount, std::wstring& report) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        report = L"RPC-служба недоступна";
+        return 1;
+    }
+    wchar_t* rpcReport = nullptr;
+    long result = 1;
+    scannedCount = 0;
+    detectedCount = 0;
+    RPC_STATUS rpcStatus = RpcScanFixedDrivesSafe(binding, &scannedCount, &detectedCount, &rpcReport, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        report = L"Ошибка RPC при сканировании дисков";
+        FreeRpcString(rpcReport);
+        return 1;
+    }
+    report = rpcReport == nullptr ? L"" : rpcReport;
+    FreeRpcString(rpcReport);
+    return result;
+}
+
+long CallSetScheduledScan(bool enabled, long intervalSeconds, std::wstring& messageText) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        messageText = L"RPC-служба недоступна";
+        return 1;
+    }
+    wchar_t* message = nullptr;
+    long result = 1;
+    RPC_STATUS rpcStatus = RpcSetScheduledScanSafe(binding, enabled ? 1 : 0, intervalSeconds, &message, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        messageText = L"Ошибка RPC при настройке расписания";
+        FreeRpcString(message);
+        return 1;
+    }
+    messageText = message == nullptr ? L"" : message;
+    FreeRpcString(message);
+    return result;
+}
+
+long CallGetScheduledScanInfo(std::wstring& report) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        report = L"RPC-служба недоступна";
+        return 1;
+    }
+    long enabled = 0;
+    long interval = 0;
+    wchar_t* lastReport = nullptr;
+    wchar_t* message = nullptr;
+    long result = 1;
+    RPC_STATUS rpcStatus = RpcGetScheduledScanInfoSafe(binding, &enabled, &interval, &lastReport, &message, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        report = L"Ошибка RPC при получении расписания";
+        FreeRpcString(lastReport);
+        FreeRpcString(message);
+        return 1;
+    }
+    report = std::wstring(L"Расписание: ") + (enabled ? L"включено" : L"отключено") + L"\r\nИнтервал: " + std::to_wstring(interval) + L" сек.\r\n" + (lastReport == nullptr ? L"" : lastReport);
+    FreeRpcString(lastReport);
+    FreeRpcString(message);
+    return result;
+}
+
+long CallStartDirectoryMonitor(const std::wstring& path, std::wstring& messageText) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        messageText = L"RPC-служба недоступна";
+        return 1;
+    }
+    wchar_t* message = nullptr;
+    long result = 1;
+    std::wstring mutablePath = path;
+    RPC_STATUS rpcStatus = RpcStartDirectoryMonitorSafe(binding, mutablePath.data(), &message, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        messageText = L"Ошибка RPC при запуске мониторинга";
+        FreeRpcString(message);
+        return 1;
+    }
+    messageText = message == nullptr ? L"" : message;
+    FreeRpcString(message);
+    return result;
+}
+
+long CallStopDirectoryMonitor(std::wstring& messageText) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        messageText = L"RPC-служба недоступна";
+        return 1;
+    }
+    wchar_t* message = nullptr;
+    long result = 1;
+    RPC_STATUS rpcStatus = RpcStopDirectoryMonitorSafe(binding, &message, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        messageText = L"Ошибка RPC при остановке мониторинга";
+        FreeRpcString(message);
+        return 1;
+    }
+    messageText = message == nullptr ? L"" : message;
+    FreeRpcString(message);
+    return result;
+}
+
+long CallGetDirectoryMonitorInfo(std::wstring& report) {
+    handle_t binding = nullptr;
+    if (!CreateRpcBinding(&binding)) {
+        report = L"RPC-служба недоступна";
+        return 1;
+    }
+    long enabled = 0;
+    wchar_t* monitoredPath = nullptr;
+    wchar_t* lastReport = nullptr;
+    wchar_t* message = nullptr;
+    long result = 1;
+    RPC_STATUS rpcStatus = RpcGetDirectoryMonitorInfoSafe(binding, &enabled, &monitoredPath, &lastReport, &message, &result);
+    RpcBindingFree(&binding);
+    if (rpcStatus != RPC_S_OK) {
+        report = L"Ошибка RPC при получении мониторинга";
+        FreeRpcString(monitoredPath);
+        FreeRpcString(lastReport);
+        FreeRpcString(message);
+        return 1;
+    }
+    report = std::wstring(L"Мониторинг: ") + (enabled ? L"включен" : L"отключен") + L"\r\nПапка: " + (monitoredPath == nullptr ? L"" : monitoredPath) + L"\r\n" + (lastReport == nullptr ? L"" : lastReport);
+    FreeRpcString(monitoredPath);
+    FreeRpcString(lastReport);
+    FreeRpcString(message);
     return result;
 }
 
@@ -733,23 +960,31 @@ void CreateChildControls(HWND window) {
     g_scanFileButton = CreateChild(L"BUTTON", L"Сканировать файл", BS_PUSHBUTTON, 0, kControlScanFile);
     g_scanFolderButton = CreateChild(L"BUTTON", L"Сканировать папку", BS_PUSHBUTTON, 0, kControlScanFolder);
     g_clearScanButton = CreateChild(L"BUTTON", L"Очистить результат", BS_PUSHBUTTON, 0, kControlClearScan);
+    g_scanDrivesButton = CreateChild(L"BUTTON", L"Все диски", BS_PUSHBUTTON, 0, kControlScanDrives);
+    g_scheduleScanButton = CreateChild(L"BUTTON", L"Расписание", BS_PUSHBUTTON, 0, kControlScheduleScan);
+    g_startMonitorButton = CreateChild(L"BUTTON", L"Мониторинг", BS_PUSHBUTTON, 0, kControlStartMonitor);
+    g_stopMonitorButton = CreateChild(L"BUTTON", L"Стоп монитор", BS_PUSHBUTTON, 0, kControlStopMonitor);
 }
 
 void PositionControls() {
     RECT client{};
     GetClientRect(g_mainWindow, &client);
-    const int panelWidth = 560;
+    const int panelWidth = 620;
     const int left = (client.right - panelWidth) / 2;
-    MoveWindow(g_usernameEdit, left + 150, 205, 260, 28, TRUE);
-    MoveWindow(g_passwordEdit, left + 150, 245, 260, 28, TRUE);
-    MoveWindow(g_loginButton, left + 205, 288, 150, 34, TRUE);
-    MoveWindow(g_activationEdit, left + 120, 235, 320, 28, TRUE);
-    MoveWindow(g_activateButton, left + 195, 278, 170, 34, TRUE);
-    MoveWindow(g_logoutButton, left + 170, 307, 220, 34, TRUE);
-    MoveWindow(g_refreshButton, left + 45, 295, 150, 34, TRUE);
-    MoveWindow(g_scanFileButton, left + 205, 295, 150, 34, TRUE);
-    MoveWindow(g_scanFolderButton, left + 365, 295, 150, 34, TRUE);
-    MoveWindow(g_clearScanButton, left + 195, 335, 170, 34, TRUE);
+    MoveWindow(g_usernameEdit, left + 170, 205, 280, 28, TRUE);
+    MoveWindow(g_passwordEdit, left + 170, 245, 280, 28, TRUE);
+    MoveWindow(g_loginButton, left + 235, 288, 150, 34, TRUE);
+    MoveWindow(g_activationEdit, left + 140, 235, 340, 28, TRUE);
+    MoveWindow(g_activateButton, left + 225, 278, 170, 34, TRUE);
+    MoveWindow(g_logoutButton, left + 200, 555, 220, 34, TRUE);
+    MoveWindow(g_refreshButton, left + 20, 295, 130, 32, TRUE);
+    MoveWindow(g_scanFileButton, left + 160, 295, 130, 32, TRUE);
+    MoveWindow(g_scanFolderButton, left + 300, 295, 130, 32, TRUE);
+    MoveWindow(g_scanDrivesButton, left + 440, 295, 130, 32, TRUE);
+    MoveWindow(g_scheduleScanButton, left + 40, 335, 130, 32, TRUE);
+    MoveWindow(g_startMonitorButton, left + 180, 335, 130, 32, TRUE);
+    MoveWindow(g_stopMonitorButton, left + 320, 335, 130, 32, TRUE);
+    MoveWindow(g_clearScanButton, left + 460, 335, 130, 32, TRUE);
 }
 
 void UpdateViewMode() {
@@ -775,6 +1010,10 @@ void UpdateViewMode() {
     ShowWindow(g_scanFileButton, mainVisible);
     ShowWindow(g_scanFolderButton, mainVisible);
     ShowWindow(g_clearScanButton, mainVisible);
+    ShowWindow(g_scanDrivesButton, mainVisible);
+    ShowWindow(g_scheduleScanButton, mainVisible);
+    ShowWindow(g_startMonitorButton, mainVisible);
+    ShowWindow(g_stopMonitorButton, mainVisible);
 }
 
 void RefreshStateAndUi() {
@@ -818,7 +1057,7 @@ void PaintMainWindow(HWND window) {
     DrawCenteredText(deviceContext, L"account guard / activation / scan mode", RECT{ 0, 72, clientRect.right, 102 }, g_smallFont, RGB(154, 77, 126), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     const int panelWidth = 620;
-    const int panelHeight = 420;
+    const int panelHeight = 520;
     const int left = (clientRect.right - panelWidth) / 2;
     RECT panelRect{ left, 122, left + panelWidth, 122 + panelHeight };
     DrawRoundedPanel(deviceContext, panelRect);
@@ -837,9 +1076,9 @@ void PaintMainWindow(HWND window) {
     } else {
         DrawCenteredText(deviceContext, L"Антивирус разблокирован", RECT{ panelRect.left + 30, panelRect.top + 20, panelRect.right - 30, panelRect.top + 55 }, g_statusFont, RGB(91, 48, 83));
         std::wstring text = L"Пользователь: " + g_state.username + L"\r\nЛицензия активна до: " + g_state.licenseExpiresAt + L"\r\nБазы выпущены: " + g_state.avDatabaseReleaseDate + L"\r\nЗаписей в базе: " + std::to_wstring(g_state.avRecordCount) + L"\r\n\r\n[ OK ] license ........ active\r\n[ OK ] av database .... loaded\r\n[ OK ] scan engine .... ready ♡";
-        DrawCenteredText(deviceContext, text, RECT{ panelRect.left + 38, 160, panelRect.right - 38, 292 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK);
+        DrawCenteredText(deviceContext, text, RECT{ panelRect.left + 38, 155, panelRect.right - 38, 285 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK);
         std::wstring scanText = g_scanReport.empty() ? L"Результаты сканирования появятся здесь" : g_scanReport;
-        DrawCenteredText(deviceContext, scanText, RECT{ panelRect.left + 35, 372, panelRect.right - 35, panelRect.bottom - 18 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK | DT_TOP);
+        DrawCenteredText(deviceContext, scanText, RECT{ panelRect.left + 35, 385, panelRect.right - 35, panelRect.bottom - 58 }, g_smallFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK | DT_TOP);
     }
 
     std::wstring message = VisibleMessage();
@@ -905,6 +1144,50 @@ void HandleScanFolder() {
     RefreshStateAndUi();
 }
 
+void HandleScanDrives() {
+    long scanned = 0;
+    long detected = 0;
+    std::wstring report;
+    long result = CallScanFixedDrives(scanned, detected, report);
+    g_scanReport = report;
+    g_localMessage = result == 0 ? L"Сканирование дисков завершено" : report;
+    RefreshStateAndUi();
+}
+
+void HandleScheduleScan() {
+    std::wstring message;
+    long result = CallSetScheduledScan(true, 60, message);
+    std::wstring info;
+    CallGetScheduledScanInfo(info);
+    g_scanReport = info;
+    g_localMessage = result == 0 ? message : message;
+    RefreshStateAndUi();
+}
+
+void HandleStartMonitor() {
+    std::wstring path = SelectFolderPath(g_mainWindow);
+    if (path.empty()) {
+        return;
+    }
+    std::wstring message;
+    long result = CallStartDirectoryMonitor(path, message);
+    std::wstring info;
+    CallGetDirectoryMonitorInfo(info);
+    g_scanReport = info;
+    g_localMessage = result == 0 ? message : message;
+    RefreshStateAndUi();
+}
+
+void HandleStopMonitor() {
+    std::wstring message;
+    long result = CallStopDirectoryMonitor(message);
+    std::wstring info;
+    CallGetDirectoryMonitorInfo(info);
+    g_scanReport = info;
+    g_localMessage = result == 0 ? message : message;
+    RefreshStateAndUi();
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == g_taskbarCreatedMessage) {
         AddTrayIcon(window);
@@ -961,6 +1244,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         case kControlScanFolder:
             HandleScanFolder();
+            return 0;
+        case kControlScanDrives:
+            HandleScanDrives();
+            return 0;
+        case kControlScheduleScan:
+            HandleScheduleScan();
+            return 0;
+        case kControlStartMonitor:
+            HandleStartMonitor();
+            return 0;
+        case kControlStopMonitor:
+            HandleStopMonitor();
             return 0;
         case kControlClearScan:
             g_scanReport.clear();
@@ -1029,7 +1324,7 @@ bool RegisterMainWindowClass() {
 }
 
 HWND CreateMainWindow() {
-    return CreateWindowExW(0, kWindowClassName, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 930, 680, nullptr, nullptr, g_instance, nullptr);
+    return CreateWindowExW(0, kWindowClassName, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 930, 760, nullptr, nullptr, g_instance, nullptr);
 }
 
 }
