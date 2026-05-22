@@ -27,6 +27,7 @@ constexpr UINT_PTR kCommandTrayOpen = 1001;
 constexpr UINT_PTR kCommandTrayExit = 1002;
 constexpr UINT_PTR kCommandFileExit = 1003;
 constexpr UINT_PTR kTimerStateRefresh = 1004;
+constexpr UINT_PTR kTimerMascotAnimation = 1005;
 constexpr int kControlUsername = 2001;
 constexpr int kControlPassword = 2002;
 constexpr int kControlLogin = 2003;
@@ -52,6 +53,8 @@ bool g_trayIconAdded = false;
 HFONT g_titleFont = nullptr;
 HFONT g_statusFont = nullptr;
 HFONT g_smallFont = nullptr;
+HFONT g_mascotFont = nullptr;
+HFONT g_monoFont = nullptr;
 HBRUSH g_backgroundBrush = nullptr;
 HBRUSH g_panelBrush = nullptr;
 HICON g_trayIcon = nullptr;
@@ -69,6 +72,7 @@ HWND g_scanDrivesButton = nullptr;
 HWND g_scheduleScanButton = nullptr;
 HWND g_startMonitorButton = nullptr;
 HWND g_stopMonitorButton = nullptr;
+int g_mascotFrame = 0;
 
 struct ClientState {
     bool rpcOnline = false;
@@ -871,6 +875,8 @@ void CreateUiResources() {
     g_titleFont = CreateFontW(34, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI");
     g_statusFont = CreateFontW(20, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Yu Gothic UI");
     g_smallFont = CreateFontW(17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI");
+    g_mascotFont = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Yu Gothic UI");
+    g_monoFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
     g_trayIcon = CreateSakuraIcon();
     if (g_trayIcon == nullptr) {
         g_trayIcon = LoadIconW(nullptr, IDI_APPLICATION);
@@ -881,6 +887,8 @@ void ReleaseUiResources() {
     if (g_titleFont != nullptr) { DeleteObject(g_titleFont); g_titleFont = nullptr; }
     if (g_statusFont != nullptr) { DeleteObject(g_statusFont); g_statusFont = nullptr; }
     if (g_smallFont != nullptr) { DeleteObject(g_smallFont); g_smallFont = nullptr; }
+    if (g_mascotFont != nullptr) { DeleteObject(g_mascotFont); g_mascotFont = nullptr; }
+    if (g_monoFont != nullptr) { DeleteObject(g_monoFont); g_monoFont = nullptr; }
     if (g_backgroundBrush != nullptr) { DeleteObject(g_backgroundBrush); g_backgroundBrush = nullptr; }
     if (g_panelBrush != nullptr) { DeleteObject(g_panelBrush); g_panelBrush = nullptr; }
     if (g_trayIcon != nullptr) { DestroyIcon(g_trayIcon); g_trayIcon = nullptr; }
@@ -966,11 +974,13 @@ void CreateChildControls(HWND window) {
     g_stopMonitorButton = CreateChild(L"BUTTON", L"Стоп монитор", BS_PUSHBUTTON, 0, kControlStopMonitor);
 }
 
+int GetContentLeft(int clientWidth, int panelWidth);
+
 void PositionControls() {
     RECT client{};
     GetClientRect(g_mainWindow, &client);
     const int panelWidth = 620;
-    const int left = (client.right - panelWidth) / 2;
+    const int left = GetContentLeft(client.right, panelWidth);
     MoveWindow(g_usernameEdit, left + 170, 205, 280, 28, TRUE);
     MoveWindow(g_passwordEdit, left + 170, 245, 280, 28, TRUE);
     MoveWindow(g_loginButton, left + 235, 288, 150, 34, TRUE);
@@ -1045,6 +1055,96 @@ void DrawCenteredText(HDC dc, const std::wstring& text, RECT rect, HFONT font, C
     DrawTextW(dc, text.c_str(), -1, &rect, flags);
 }
 
+
+int GetContentLeft(int clientWidth, int panelWidth) {
+    if (clientWidth >= 1000) {
+        return 48;
+    }
+    return (clientWidth - panelWidth) / 2;
+}
+
+RECT MakeMascotRect(const RECT& clientRect, const RECT& panelRect) {
+    return RECT{ panelRect.right + 24, panelRect.top, clientRect.right - 48, panelRect.bottom };
+}
+
+void DrawSoftCircle(HDC dc, int x, int y, int radius, COLORREF fill, COLORREF outline) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 2, outline);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    Ellipse(dc, x - radius, y - radius, x + radius, y + radius);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
+
+void DrawMascotPanel(HDC dc, const RECT& rect) {
+    if (rect.right - rect.left < 230) {
+        return;
+    }
+
+    DrawRoundedPanel(dc, rect);
+
+    const int centerX = (rect.left + rect.right) / 2;
+    const int bob = (g_mascotFrame % 2 == 0) ? 0 : 4;
+    const bool blink = (g_mascotFrame % 6 == 4);
+
+    DrawCenteredText(dc, L"Sakura Assistant", RECT{ rect.left + 18, rect.top + 18, rect.right - 18, rect.top + 50 }, g_statusFont, RGB(128, 42, 98), DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    DrawCenteredText(dc, L"ももガード ♡", RECT{ rect.left + 18, rect.top + 47, rect.right - 18, rect.top + 76 }, g_mascotFont, RGB(197, 68, 142), DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    HBRUSH bodyBrush = CreateSolidBrush(RGB(255, 205, 232));
+    HPEN bodyPen = CreatePen(PS_SOLID, 2, RGB(213, 94, 160));
+    HGDIOBJ oldBrush = SelectObject(dc, bodyBrush);
+    HGDIOBJ oldPen = SelectObject(dc, bodyPen);
+    RoundRect(dc, centerX - 64, rect.top + 245 + bob, centerX + 64, rect.top + 365 + bob, 48, 48);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(bodyBrush);
+    DeleteObject(bodyPen);
+
+    DrawSoftCircle(dc, centerX, rect.top + 170 + bob, 67, RGB(255, 222, 238), RGB(213, 94, 160));
+    DrawSoftCircle(dc, centerX - 34, rect.top + 118 + bob, 26, RGB(255, 190, 224), RGB(213, 94, 160));
+    DrawSoftCircle(dc, centerX + 34, rect.top + 118 + bob, 26, RGB(255, 190, 224), RGB(213, 94, 160));
+
+    HPEN facePen = CreatePen(PS_SOLID, 3, RGB(103, 48, 86));
+    oldPen = SelectObject(dc, facePen);
+    if (blink) {
+        MoveToEx(dc, centerX - 28, rect.top + 165 + bob, nullptr);
+        LineTo(dc, centerX - 13, rect.top + 165 + bob);
+        MoveToEx(dc, centerX + 13, rect.top + 165 + bob, nullptr);
+        LineTo(dc, centerX + 28, rect.top + 165 + bob);
+    } else {
+        Ellipse(dc, centerX - 31, rect.top + 155 + bob, centerX - 17, rect.top + 171 + bob);
+        Ellipse(dc, centerX + 17, rect.top + 155 + bob, centerX + 31, rect.top + 171 + bob);
+    }
+    MoveToEx(dc, centerX - 12, rect.top + 194 + bob, nullptr);
+    LineTo(dc, centerX, rect.top + 202 + bob);
+    LineTo(dc, centerX + 12, rect.top + 194 + bob);
+    SelectObject(dc, oldPen);
+    DeleteObject(facePen);
+
+    DrawCenteredText(dc, L"✦", RECT{ centerX - 98, rect.top + 100, centerX - 55, rect.top + 140 }, g_mascotFont, RGB(223, 91, 163), DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    DrawCenteredText(dc, L"♡", RECT{ centerX + 58, rect.top + 90, centerX + 105, rect.top + 132 }, g_mascotFont, RGB(223, 91, 163), DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    std::wstring mood;
+    if (!g_state.rpcOnline) {
+        mood = L"[!] service link offline\r\n待機中 / waiting";
+    } else if (!g_state.authenticated) {
+        mood = L"[♡] login required\r\nログインしてね";
+    } else if (!g_state.licenseValid) {
+        mood = L"[!] activation needed\r\nキーを入力してね";
+    } else if (!g_scanReport.empty()) {
+        mood = L"[✦] scan report ready\r\nスキャン完了";
+    } else {
+        const wchar_t* dots[] = { L"", L".", L"..", L"..." };
+        mood = std::wstring(L"[OK] protected") + dots[g_mascotFrame % 4] + L"\r\n保護中 / safe mode";
+    }
+
+    DrawCenteredText(dc, mood, RECT{ rect.left + 22, rect.top + 392, rect.right - 22, rect.top + 455 }, g_monoFont, RGB(91, 48, 83), DT_CENTER | DT_WORDBREAK | DT_VCENTER);
+    DrawCenteredText(dc, L"petal engine online", RECT{ rect.left + 20, rect.bottom - 48, rect.right - 20, rect.bottom - 18 }, g_smallFont, RGB(154, 77, 126), DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+}
+
 void PaintMainWindow(HWND window) {
     PAINTSTRUCT paintStruct{};
     HDC deviceContext = BeginPaint(window, &paintStruct);
@@ -1053,14 +1153,15 @@ void PaintMainWindow(HWND window) {
     FillRect(deviceContext, &clientRect, g_backgroundBrush);
     SetBkMode(deviceContext, TRANSPARENT);
 
-    DrawCenteredText(deviceContext, L"Sakura Shield ♡", RECT{ 0, 26, clientRect.right, 76 }, g_titleFont, RGB(128, 42, 98), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    DrawCenteredText(deviceContext, L"account guard / activation / scan mode", RECT{ 0, 72, clientRect.right, 102 }, g_smallFont, RGB(154, 77, 126), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawCenteredText(deviceContext, L"Sakura Shield ♡", RECT{ 0, 24, clientRect.right, 74 }, g_titleFont, RGB(128, 42, 98), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawCenteredText(deviceContext, L"保護中 / account guard / activation / scan mode", RECT{ 0, 72, clientRect.right, 102 }, g_smallFont, RGB(154, 77, 126), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     const int panelWidth = 620;
     const int panelHeight = 520;
-    const int left = (clientRect.right - panelWidth) / 2;
+    const int left = GetContentLeft(clientRect.right, panelWidth);
     RECT panelRect{ left, 122, left + panelWidth, 122 + panelHeight };
     DrawRoundedPanel(deviceContext, panelRect);
+    DrawMascotPanel(deviceContext, MakeMascotRect(clientRect, panelRect));
 
     if (g_viewMode == ViewMode::Login) {
         DrawCenteredText(deviceContext, L"Вход в учетную запись", RECT{ panelRect.left + 30, panelRect.top + 24, panelRect.right - 30, panelRect.top + 60 }, g_statusFont, RGB(91, 48, 83));
@@ -1202,6 +1303,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         PositionControls();
         RefreshStateAndUi();
         SetTimer(window, kTimerStateRefresh, 10000, nullptr);
+        SetTimer(window, kTimerMascotAnimation, 650, nullptr);
         return 0;
 
     case WM_SIZE:
@@ -1212,6 +1314,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (wParam == kTimerStateRefresh) {
             g_localMessage.clear();
             RefreshStateAndUi();
+            return 0;
+        }
+        if (wParam == kTimerMascotAnimation) {
+            g_mascotFrame = (g_mascotFrame + 1) % 12;
+            InvalidateRect(window, nullptr, FALSE);
             return 0;
         }
         break;
@@ -1297,6 +1404,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         KillTimer(window, kTimerStateRefresh);
+        KillTimer(window, kTimerMascotAnimation);
         RemoveTrayIcon();
         ReleaseUiResources();
         PostQuitMessage(0);
@@ -1324,7 +1432,7 @@ bool RegisterMainWindowClass() {
 }
 
 HWND CreateMainWindow() {
-    return CreateWindowExW(0, kWindowClassName, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 930, 760, nullptr, nullptr, g_instance, nullptr);
+    return CreateWindowExW(0, kWindowClassName, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1080, 760, nullptr, nullptr, g_instance, nullptr);
 }
 
 }
