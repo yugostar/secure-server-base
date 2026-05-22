@@ -26,6 +26,7 @@ jobs:
           Copy-Item build\desktop\Release\SakuraShield.exe artifacts\SakuraShield.exe
           Copy-Item build\desktop\Release\SakuraShieldService.exe artifacts\SakuraShieldService.exe
           Copy-Item desktop\demo artifacts\demo -Recurse
+          Copy-Item desktop\avdb artifacts\avdb -Recurse
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
